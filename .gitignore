@@ -70,11 +70,12 @@ apps/frontend/ios/
 apps/frontend/android/
 
 # Foundry/Forge (Contracts)
-packages/contracts/**/cache/
-packages/contracts/**/out/
-packages/contracts/**/broadcast/*/31337/
-packages/contracts/**/broadcast/**/dry-run/
-packages/contracts/**/docs/
+packages/contracts/cache/
+packages/contracts/out/
+packages/contracts/lib/
+packages/contracts/broadcast/*/31337/
+packages/contracts/broadcast/**/dry-run/
+packages/contracts/docs/
 
 # Temporary files
 *.tmp
