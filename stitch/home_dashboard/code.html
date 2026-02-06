@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AbiPago Home Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#a1e633",
+                        "background-light": "#f7f8f6",
+                        "background-dark": "#1b2111", // Keeping config, but will override with specific hex for body as requested
+                        "surface-dark": "#111827",
+                        "border-dark": "#1F2937",
+                        "app-bg": "#0B0F17", // Specific requested background
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-app-bg text-white font-display min-h-screen flex flex-col overflow-hidden selection:bg-primary selection:text-black">
+<!-- Top Header -->
+<header class="flex items-center justify-between px-6 py-5 sticky top-0 z-10 bg-app-bg/80 backdrop-blur-md border-b border-border-dark/50">
+<h1 class="text-2xl font-bold tracking-tight text-white">AbiPago</h1>
+<button aria-label="Settings" class="flex items-center justify-center w-10 h-10 rounded-full text-gray-400 hover:text-white hover:bg-surface-dark transition-colors">
+<span class="material-symbols-outlined text-[24px]">settings</span>
+</button>
+</header>
+<!-- Main Content Area -->
+<main class="flex-1 flex flex-col px-6 pt-6 pb-24 overflow-y-auto gap-8">
+<!-- Connection Status Card -->
+<div class="w-full bg-surface-dark border border-border-dark rounded-2xl p-4 shadow-sm">
+<div class="flex items-center justify-between divide-x divide-border-dark/50">
+<!-- Status -->
+<div class="flex flex-col items-center flex-1 px-2 gap-1">
+<div class="flex items-center gap-1.5 text-[#4ade80]">
+<span class="material-symbols-outlined text-[18px] fill-1">check_circle</span>
+<span class="text-xs font-bold uppercase tracking-wider">Active</span>
+</div>
+<span class="text-[11px] text-gray-400 font-medium">Status</span>
+</div>
+<!-- Network -->
+<div class="flex flex-col items-center flex-1 px-2 gap-1">
+<div class="flex items-center gap-1.5 text-blue-400">
+<span class="material-symbols-outlined text-[18px]">public</span>
+<span class="text-xs font-bold uppercase tracking-wider">Arb One</span>
+</div>
+<span class="text-[11px] text-gray-400 font-medium">Network</span>
+</div>
+<!-- Wallet -->
+<div class="flex flex-col items-center flex-1 px-2 gap-1">
+<div class="flex items-center gap-1.5 text-white">
+<span class="material-symbols-outlined text-[18px]">wallet</span>
+<span class="text-xs font-bold tracking-wider">0xA3...e7</span>
+</div>
+<span class="text-[11px] text-gray-400 font-medium">Wallet</span>
+</div>
+</div>
+</div>
+<!-- Identity / ENS Card -->
+<div class="flex flex-col items-center justify-center py-6">
+<div class="relative group">
+<div class="absolute -inset-1 bg-gradient-to-r from-primary/20 to-blue-500/20 rounded-full blur opacity-75 group-hover:opacity-100 transition duration-1000 group-hover:duration-200"></div>
+<div class="relative w-32 h-32 rounded-full p-1 bg-surface-dark border border-border-dark">
+<img alt="User Profile Avatar" class="w-full h-full rounded-full object-cover" data-alt="Digital portrait of a woman representing a user avatar" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCXyTZ6sSWlknaBQIyPwLgBU1xGKCBi7JPp1u3T0BgY5jVHtvJvYfW7GXvW1tZzb8W2EVoGdNRP-_jnUv-PdFmbvIjFIU73nleTNxZN1k-yFc9M16U0M3IipkPb9qAX0eztz6K8qWBMtsbc-2Ys00WFuVHHYxGH5Xoj6Bio_M4oCZg8IxqG_MZJcpkyMMkxOA_rLkqbm1l3clOJyvB71ORIAIaiB4uVgPbDESxaHsmvc1koYbHRMDCD8XjDqr380UNTOnJE5l7VKAI"/>
+</div>
+</div>
+<div class="mt-5 text-center space-y-1">
+<h2 class="text-3xl font-bold text-white tracking-tight">vitalik.eth</h2>
+<div class="inline-flex items-center px-3 py-1 rounded-full bg-surface-dark border border-border-dark">
+<span class="w-2 h-2 rounded-full bg-primary mr-2"></span>
+<p class="text-sm text-gray-400 font-medium">Primary ENS</p>
+</div>
+</div>
+</div>
+<!-- Action Buttons -->
+<div class="grid grid-cols-2 gap-4 mt-auto">
+<button class="group relative flex flex-col items-center justify-center gap-3 h-32 w-full bg-primary rounded-3xl hover:brightness-110 active:scale-[0.98] transition-all duration-200 shadow-[0_0_20px_rgba(161,230,51,0.15)] overflow-hidden">
+<div class="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<div class="w-12 h-12 rounded-full bg-[#1b2112]/10 flex items-center justify-center mb-1">
+<span class="material-symbols-outlined text-[#1b2112] text-[32px] rotate-45">arrow_upward</span>
+</div>
+<span class="text-[#1b2112] text-xl font-bold tracking-wide">Pay</span>
+</button>
+<button class="group relative flex flex-col items-center justify-center gap-3 h-32 w-full bg-primary rounded-3xl hover:brightness-110 active:scale-[0.98] transition-all duration-200 shadow-[0_0_20px_rgba(161,230,51,0.15)] overflow-hidden">
+<div class="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<div class="w-12 h-12 rounded-full bg-[#1b2112]/10 flex items-center justify-center mb-1">
+<span class="material-symbols-outlined text-[#1b2112] text-[32px] rotate-45">arrow_downward</span>
+</div>
+<span class="text-[#1b2112] text-xl font-bold tracking-wide">Receive</span>
+</button>
+</div>
+<!-- Secondary Action -->
+<div class="flex justify-center pb-4">
+<button class="flex items-center gap-2 text-gray-400 hover:text-white transition-colors py-2 px-4 rounded-full hover:bg-surface-dark">
+<span class="material-symbols-outlined text-[20px]">history</span>
+<span class="text-sm font-semibold">View Transaction History</span>
+</button>
+</div>
+</main>
+<!-- Bottom Navigation -->
+<nav class="fixed bottom-0 left-0 w-full bg-app-bg/90 backdrop-blur-xl border-t border-border-dark pb-safe">
+<div class="flex justify-around items-center h-20 px-2 pb-2">
+<button class="flex flex-col items-center gap-1 p-2 text-primary">
+<span class="material-symbols-outlined text-[28px] filled">home</span>
+<span class="text-[10px] font-medium">Home</span>
+</button>
+<button class="flex flex-col items-center gap-1 p-2 text-gray-500 hover:text-gray-300 transition-colors">
+<span class="material-symbols-outlined text-[28px]">swap_horiz</span>
+<span class="text-[10px] font-medium">Swap</span>
+</button>
+<button class="flex flex-col items-center gap-1 p-2 text-gray-500 hover:text-gray-300 transition-colors">
+<span class="material-symbols-outlined text-[28px]">receipt_long</span>
+<span class="text-[10px] font-medium">Activity</span>
+</button>
+<button class="flex flex-col items-center gap-1 p-2 text-gray-500 hover:text-gray-300 transition-colors">
+<span class="material-symbols-outlined text-[28px]">person</span>
+<span class="text-[10px] font-medium">Profile</span>
+</button>
+</div>
+</nav>
+</body></html>

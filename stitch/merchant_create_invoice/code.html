@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AbiPago - Merchant Receive</title>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Theme Configuration -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#a1e633",
+                        "background-light": "#f7f8f6",
+                        "background-dark": "#1b2111",
+                        "card-dark": "#252e1a",
+                        "input-dark": "#313c23",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "1rem", 
+                        "lg": "1.5rem", 
+                        "xl": "2rem",
+                        "2xl": "2.5rem",
+                        "full": "9999px"
+                    },
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom scrollbar hide for cleaner UI */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-white font-display antialiased selection:bg-primary selection:text-black">
+<div class="relative flex h-full min-h-screen w-full max-w-md mx-auto flex-col justify-between overflow-x-hidden pb-20">
+<!-- Header -->
+<div class="flex items-center p-6 pb-2 justify-between">
+<h2 class="text-2xl font-bold leading-tight tracking-tight">Receive</h2>
+<button class="p-2 rounded-full hover:bg-white/5 transition-colors text-white/70 hover:text-white">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+</div>
+<!-- Main Scrollable Content -->
+<div class="flex-1 flex flex-col gap-6 p-4 overflow-y-auto no-scrollbar">
+<!-- Merchant Identity Card -->
+<div class="w-full bg-card-dark rounded-xl p-4 flex items-center justify-between shadow-lg shadow-black/20 border border-white/5">
+<div class="flex items-center gap-3">
+<div class="relative">
+<div class="h-12 w-12 rounded-full bg-cover bg-center border-2 border-primary/20" data-alt="Abstract fluid 3D shape representing a crypto wallet avatar" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuD1V3m8RC4T_u5h5y1N-XGSPgKLYTMJZy4UmBxOhmjJswjAQdu1LnaPcaWKaZ_4B4J1-Z9noJvmKbFVpLMv-lzOZ-Iu3v0NkKeBH4w5d8BTNU8J11nMZE_NnbK8vf9OwU19DtlLYR4fiBmvosg2mWf4w9iHVghBZc-bl3pru6RJNn2IKTXbO4K-s7pajnMLuAXzoXUfU8f69n4TC-dmrakR5efj-Z8eW1jhmNoICRJz99d9x8OuuREh3gxnpcN_6X3SgoVKZmiHnkE');"></div>
+<div class="absolute -bottom-1 -right-1 bg-primary text-[10px] font-bold text-black px-1.5 py-0.5 rounded-full border border-background-dark">ENS</div>
+</div>
+<div>
+<p class="text-white text-lg font-bold leading-tight">cafeteria.eth</p>
+<p class="text-white/40 text-xs font-medium">0x84...3a19</p>
+</div>
+</div>
+<button class="flex items-center justify-center h-9 px-4 rounded-full border border-white/10 hover:bg-white/5 transition-colors text-white/80 text-xs font-semibold tracking-wide">
+                    Load profile
+                </button>
+</div>
+<!-- Invoice Creation Card -->
+<div class="flex flex-col w-full bg-card-dark rounded-2xl p-6 gap-6 shadow-xl shadow-black/10 border border-white/5 flex-1 justify-center min-h-[320px]">
+<!-- Currency Selector -->
+<div class="flex justify-center">
+<button class="flex items-center gap-2 bg-input-dark hover:bg-white/10 transition-colors py-1.5 px-4 rounded-full border border-white/5">
+<span class="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center text-[10px] text-white font-bold">$</span>
+<span class="text-sm font-bold text-white tracking-wide">USD</span>
+<span class="material-symbols-outlined text-white/50 text-sm">expand_more</span>
+</button>
+</div>
+<!-- Amount Input -->
+<div class="flex flex-col items-center justify-center gap-2">
+<div class="relative flex items-center justify-center w-full">
+<span class="text-4xl md:text-5xl font-bold text-primary mr-1">$</span>
+<input class="bg-transparent border-none text-center text-5xl md:text-6xl font-bold text-white placeholder:text-white/20 focus:ring-0 p-0 w-full max-w-[280px] caret-primary appearance-none m-0" inputmode="decimal" placeholder="0.00" type="number" value="15.00"/>
+</div>
+<!-- Conversion hint -->
+<p class="text-white/40 text-sm font-medium">≈ 0.0042 ETH</p>
+</div>
+<!-- Note Field -->
+<div class="relative mt-2">
+<label class="sr-only" for="note">Note</label>
+<div class="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-white/30 text-lg">edit_note</span>
+</div>
+<input class="w-full bg-input-dark border-none rounded-xl py-4 pl-12 pr-4 text-white placeholder:text-white/30 focus:ring-1 focus:ring-primary/50 transition-all text-sm font-medium" id="note" placeholder="Add a note (optional)" type="text"/>
+</div>
+<!-- Tip Toggle -->
+<div class="flex items-center justify-between py-1 px-1">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-xl">savings</span>
+<span class="text-white font-medium text-sm">Enable tip</span>
+</div>
+<label class="relative inline-flex items-center cursor-pointer">
+<input class="sr-only peer" type="checkbox" value=""/>
+<div class="w-11 h-6 bg-input-dark peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+</label>
+</div>
+</div>
+<!-- Bottom Spacer -->
+<div class="h-4"></div>
+</div>
+<!-- Fixed Bottom Actions -->
+<div class="fixed bottom-[88px] left-0 right-0 p-4 w-full max-w-md mx-auto z-10 pointer-events-none">
+<div class="flex flex-col gap-3 pointer-events-auto">
+<button class="w-full bg-primary hover:bg-primary/90 active:scale-[0.98] transition-all h-14 rounded-full flex items-center justify-center gap-2 shadow-lg shadow-primary/20 text-black">
+<span class="material-symbols-outlined font-semibold">qr_code_2</span>
+<span class="text-base font-bold tracking-wide">Generate QR</span>
+</button>
+<button class="w-full bg-card-dark hover:bg-white/10 active:scale-[0.98] border border-white/10 transition-all h-14 rounded-full flex items-center justify-center gap-2 text-white">
+<span class="material-symbols-outlined text-white/80">contactless</span>
+<span class="text-base font-bold tracking-wide">Write NFC Tag</span>
+</button>
+</div>
+</div>
+<!-- Bottom Navigation -->
+<div class="fixed bottom-0 w-full max-w-md mx-auto bg-[#14190d]/90 backdrop-blur-md border-t border-white/5 pb-6 pt-2 z-20">
+<div class="flex justify-around items-center">
+<button class="flex flex-col items-center gap-1 p-2 text-white/40 hover:text-white transition-colors group">
+<span class="material-symbols-outlined group-hover:scale-110 transition-transform">home</span>
+<span class="text-[10px] font-medium">Home</span>
+</button>
+<button class="flex flex-col items-center gap-1 p-2 text-primary">
+<div class="bg-primary/10 px-4 py-1 rounded-full flex items-center justify-center">
+<span class="material-symbols-outlined fill-1">call_received</span>
+</div>
+<span class="text-[10px] font-bold">Receive</span>
+</button>
+<button class="flex flex-col items-center gap-1 p-2 text-white/40 hover:text-white transition-colors group">
+<span class="material-symbols-outlined group-hover:scale-110 transition-transform">history</span>
+<span class="text-[10px] font-medium">History</span>
+</button>
+<button class="flex flex-col items-center gap-1 p-2 text-white/40 hover:text-white transition-colors group">
+<span class="material-symbols-outlined group-hover:scale-110 transition-transform">settings</span>
+<span class="text-[10px] font-medium">Settings</span>
+</button>
+</div>
+</div>
+</div>
+</body></html>

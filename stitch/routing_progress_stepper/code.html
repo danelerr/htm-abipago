@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Routing Progress - AbiPago</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#a1e633",
+                        "background-light": "#f7f8f6",
+                        "background-dark": "#1b2111",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        /* Custom tweaks to ensure perfect centering of material icons */
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            font-size: 24px;
+        }
+        .material-symbols-outlined.unfilled {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-light dark:bg-background-dark font-display min-h-screen flex flex-col items-center justify-center">
+<!-- Mobile Container -->
+<div class="w-full max-w-md h-screen max-h-[900px] flex flex-col bg-background-light dark:bg-background-dark overflow-hidden relative shadow-2xl">
+<!-- Header -->
+<div class="flex items-center justify-between p-6 pb-2 z-10">
+<button class="text-gray-900 dark:text-white flex items-center justify-center w-10 h-10 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+<span class="material-symbols-outlined">arrow_back</span>
+</button>
+<h2 class="text-gray-900 dark:text-white text-lg font-bold tracking-tight">Processing Payment</h2>
+<div class="w-10"></div> <!-- Spacer for optical centering -->
+</div>
+<!-- Scrollable Content -->
+<div class="flex-1 overflow-y-auto px-6 py-8">
+<!-- Stepper Container -->
+<div class="flex flex-col">
+<!-- Step 1: Completed -->
+<div class="flex group">
+<!-- Left Column: Icon & Line -->
+<div class="flex flex-col items-center mr-4">
+<div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0 z-10 shadow-[0_0_15px_rgba(161,230,51,0.4)]">
+<span class="material-symbols-outlined text-[#1b2111]" style="font-size: 20px;">check</span>
+</div>
+<div class="w-0.5 h-full bg-primary my-1 rounded-full"></div>
+</div>
+<!-- Right Column: Content -->
+<div class="flex flex-col pb-8 pt-1">
+<h3 class="text-gray-900 dark:text-white text-base font-semibold leading-none mb-1.5">Preparing route</h3>
+<p class="text-primary text-sm font-medium">Route found via LI.FI</p>
+</div>
+</div>
+<!-- Step 2: In Progress -->
+<div class="flex group">
+<div class="flex flex-col items-center mr-4">
+<div class="w-8 h-8 rounded-full bg-background-dark border-2 border-primary flex items-center justify-center shrink-0 z-10 relative">
+<!-- Spinner Icon -->
+<span class="material-symbols-outlined text-primary animate-spin" style="font-size: 20px;">progress_activity</span>
+</div>
+<!-- Gradient Line to Pending -->
+<div class="w-0.5 h-full bg-gradient-to-b from-primary to-gray-700 dark:to-gray-800 my-1 rounded-full opacity-50"></div>
+</div>
+<div class="flex flex-col pb-8 pt-1">
+<h3 class="text-gray-900 dark:text-white text-base font-semibold leading-none mb-1.5">Swapping / Bridging</h3>
+<p class="text-primary/80 text-sm font-normal">Estimated time: ~2 mins</p>
+<!-- Mini Transaction Details Box -->
+<div class="mt-3 p-3 bg-white/5 border border-white/5 rounded-xl flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-blue-400" style="font-size: 18px;">swap_horiz</span>
+</div>
+<div class="flex flex-col">
+<span class="text-xs text-gray-400 uppercase tracking-wider">Bridge</span>
+<span class="text-sm text-white font-medium">Optimism <span class="text-gray-500 mx-1">→</span> Base</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Step 3: Pending -->
+<div class="flex group">
+<div class="flex flex-col items-center mr-4">
+<div class="w-8 h-8 rounded-full bg-background-dark border border-gray-700 flex items-center justify-center shrink-0 z-10">
+<div class="w-2.5 h-2.5 rounded-full bg-gray-700"></div>
+</div>
+<div class="w-0.5 h-full bg-gray-300 dark:bg-gray-800 my-1 rounded-full"></div>
+</div>
+<div class="flex flex-col pb-8 pt-1 opacity-40">
+<h3 class="text-gray-900 dark:text-white text-base font-semibold leading-none mb-1.5">Settling on destination</h3>
+<p class="text-gray-500 dark:text-gray-400 text-sm font-normal">Pending confirmation</p>
+</div>
+</div>
+<!-- Step 4: Pending -->
+<div class="flex group">
+<div class="flex flex-col items-center mr-4">
+<div class="w-8 h-8 rounded-full bg-background-dark border border-gray-700 flex items-center justify-center shrink-0 z-10">
+<div class="w-2.5 h-2.5 rounded-full bg-gray-700"></div>
+</div>
+</div>
+<div class="flex flex-col pt-1 opacity-40">
+<h3 class="text-gray-900 dark:text-white text-base font-semibold leading-none mb-1.5">Payment sent</h3>
+<p class="text-gray-500 dark:text-gray-400 text-sm font-normal">Pending</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Footer Area -->
+<div class="p-6 bg-gradient-to-t from-background-dark via-background-dark to-transparent pt-12">
+<!-- Status Card -->
+<div class="flex items-center justify-between bg-[#2a3022] border border-[#3f4a30] p-4 rounded-xl mb-6 shadow-lg">
+<div class="flex flex-col gap-1">
+<span class="text-white text-sm font-bold">Bridging via LI.FI...</span>
+<span class="text-xs text-gray-400">Finding best rates &amp; routes</span>
+</div>
+<!-- Abstract visualization of network routing -->
+<div class="h-10 w-16 bg-cover bg-center rounded-lg opacity-80" data-alt="Abstract digital network connections glowing in green" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuDu7H9C78oUUzLcuw0PRIz_mKeqGAcP22ZvLYyBoJhY1XpgyTfxwlRaHF_iim-lVVyMdimaUgDBNyxTU0do_X8WYmlxfgw00UAJ4J8CZbMn4JSesxse53BrNtuPYSxmctZBiIOBxO0xfxsc8iqwqOwkPzUR1AWX-K12E-VXD3NFBPLLF0HLcbZqHLE0NJmybjRxf5hu2KBSDtdqyYOKaFF3wGSWaHEuZ-2lyKgovPQRCOU1i-KAOtdLlqc3RYkiYS_L5MuOXy_935w');"></div>
+</div>
+<!-- Action Button -->
+<button class="w-full h-14 bg-white/10 dark:bg-white/5 text-gray-400 dark:text-white/40 font-bold text-base rounded-full flex items-center justify-center gap-3 cursor-not-allowed border border-white/5" disabled="">
+<span class="material-symbols-outlined animate-spin" style="font-size: 20px;">donut_large</span>
+                Processing...
+            </button>
+</div>
+</div>
+</body></html>

@@ -2,16 +2,18 @@
   "name": "@abipago/contracts",
   "version": "0.1.0",
   "private": true,
-  "description": "Smart contracts for AbiPago",
+  "description": "Smart contracts for AbiPago — PayRouter + Uniswap V4 integration",
   "scripts": {
-    "build": "cd Counter && forge build",
-    "test": "cd Counter && forge test",
-    "deploy": "cd Counter && forge script script/Counter.s.sol:CounterScript --rpc-url $RPC_URL --broadcast",
-    "export": "cd Counter && forge build && cp out/Counter.sol/Counter.json ../../../apps/frontend/contracts/"
+    "build": "forge build",
+    "test": "forge test -vvv",
+    "deploy:base": "forge script script/DeployPayRouter.s.sol:DeployPayRouter --rpc-url $BASE_RPC_URL --broadcast --verify -vvvv",
+    "deploy:arb": "forge script script/DeployPayRouter.s.sol:DeployPayRouter --rpc-url $ARB_RPC_URL --broadcast --verify -vvvv"
   },
   "keywords": [
     "solidity",
     "foundry",
-    "smart-contracts"
+    "smart-contracts",
+    "uniswap-v4",
+    "abipago"
   ]
 }
