@@ -1,0 +1,17 @@
+{
+  "name": "@abipago/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Smart contracts for AbiPago",
+  "scripts": {
+    "build": "cd Counter && forge build",
+    "test": "cd Counter && forge test",
+    "deploy": "cd Counter && forge script script/Counter.s.sol:CounterScript --rpc-url $RPC_URL --broadcast",
+    "export": "cd Counter && forge build && cp out/Counter.sol/Counter.json ../../../apps/frontend/contracts/"
+  },
+  "keywords": [
+    "solidity",
+    "foundry",
+    "smart-contracts"
+  ]
+}
