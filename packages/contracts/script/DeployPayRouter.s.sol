@@ -6,52 +6,60 @@ import {PayRouter} from "../src/PayRouter.sol";
 
 /**
  * @title DeployPayRouter
- * @notice Deployment script for AbiPago PayRouter.
+ * @notice Deployment script for AbiPago PayRouter on Unichain.
  *
- * Usage:
- *   # Base mainnet (recommended for demo)
+ * Usage (Unichain mainnet):
  *   forge script script/DeployPayRouter.s.sol:DeployPayRouter \
- *     --rpc-url $BASE_RPC_URL \
- *     --broadcast \
- *     --verify \
+ *     --rpc-url https://mainnet.unichain.org \
+ *     --broadcast --verify \
+ *     --verifier blockscout \
+ *     --verifier-url https://unichain.blockscout.com/api/ \
+ *     -vvvv
+ *
+ * Usage (Unichain Sepolia testnet):
+ *   forge script script/DeployPayRouter.s.sol:DeployPayRouter \
+ *     --rpc-url https://sepolia.unichain.org \
+ *     --broadcast --verify \
+ *     --verifier blockscout \
+ *     --verifier-url https://unichain-sepolia.blockscout.com/api/ \
  *     -vvvv
  *
  * Required env vars:
  *   PRIVATE_KEY         — deployer private key
- *   UNIVERSAL_ROUTER    — Uniswap Universal Router address on target chain
- *   WETH                — WETH (wrapped native) address on target chain
  *
  * Optional env vars:
+ *   UNIVERSAL_ROUTER    — override Universal Router address (default: Unichain mainnet)
+ *   WETH                — override WETH address (default: Unichain 0x4200...0006)
  *   FEE_RECIPIENT       — address for protocol fees (default: none)
  *   FEE_BPS             — fee in basis points, max 100 (default: 0)
  *
- * ┌─────────────────────────────────────────────────────────────────┐
- * │  Mainnet Addresses (verify at docs before deploying)           │
- * ├─────────────┬──────────────────────────────────────────────────┤
- * │  Chain      │  Universal Router                                │
- * ├─────────────┼──────────────────────────────────────────────────┤
- * │  Base       │  0x6fF5693b99212Da76ad316178A184AB56D299b43      │
- * │  Arbitrum   │  0x6fF5693b99212Da76ad316178A184AB56D299b43      │
- * │  Optimism   │  0x6fF5693b99212Da76ad316178A184AB56D299b43      │
- * │  Ethereum   │  0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af      │
- * └─────────────┴──────────────────────────────────────────────────┘
- * ┌─────────────┬──────────────────────────────────────────────────┐
- * │  Chain      │  WETH Address                                    │
- * ├─────────────┼──────────────────────────────────────────────────┤
- * │  Base       │  0x4200000000000000000000000000000000000006       │
- * │  Arbitrum   │  0x82aF49447D8a07e3bd95BD0d56f35241523fBab1      │
- * │  Optimism   │  0x4200000000000000000000000000000000000006       │
- * │  Ethereum   │  0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2     │
- * └─────────────┴──────────────────────────────────────────────────┘
+ * ┌─────────────────────────────────────────────────────────┐
+ * │  Unichain Addresses                                    │
+ * ├─────────────┬───────────────────────────────────────────┤
+ * │  Contract   │  Address                                  │
+ * ├─────────────┼───────────────────────────────────────────┤
+ * │  Universal  │  Mainnet:  0xef740bf23acae26f6492b10de645 │
+ * │  Router     │           d6b98dc8eaf3                    │
+ * │             │  Sepolia:  0xf70536b3bcc1bd1a972dc186a2cf │
+ * │             │           84cc6da6be5d                    │
+ * ├─────────────┼───────────────────────────────────────────┤
+ * │  WETH9      │  0x4200000000000000000000000000000000000006│
+ * ├─────────────┼───────────────────────────────────────────┤
+ * │  USDC       │  Mainnet:  0x078d782b760474a361dda0af3839 │
+ * │             │           290b0ef57ad6                    │
+ * │             │  Sepolia:  0x31d0220469e10c4e71834a79b1f2 │
+ * │             │           76d740d3768f                    │
+ * └─────────────┴───────────────────────────────────────────┘
  *
- * ⚠️  Verify latest addresses at:
- *     https://docs.uniswap.org/contracts/v4/deployments
+ * Verify at: https://docs.unichain.org/docs/technical-information/contract-addresses
  */
 contract DeployPayRouter is Script {
     function run() public {
-        uint256 deployerPK = vm.envUint("PRIVATE_KEY");
-        address universalRouter = vm.envAddress("UNIVERSAL_ROUTER");
-        address weth = vm.envAddress("WETH");
+        uint256 deployerPk = vm.envUint("PRIVATE_KEY");
+
+        // Default to Unichain mainnet addresses
+        address universalRouter = vm.envOr("UNIVERSAL_ROUTER", address(0xEf740bf23aCaE26f6492B10de645D6B98dC8Eaf3));
+        address weth = vm.envOr("WETH", address(0x4200000000000000000000000000000000000006));
 
         // Optional fee config
         address feeRecipient = vm.envOr("FEE_RECIPIENT", address(0));
@@ -61,7 +69,7 @@ contract DeployPayRouter is Script {
         console.log("  Universal Router:", universalRouter);
         console.log("  WETH:           ", weth);
 
-        vm.startBroadcast(deployerPK);
+        vm.startBroadcast(deployerPk);
 
         // 1. Deploy PayRouter
         PayRouter payRouter = new PayRouter(universalRouter, weth);
@@ -69,6 +77,8 @@ contract DeployPayRouter is Script {
 
         // 2. Set fee config (if provided)
         if (feeRecipient != address(0) && feeBps > 0) {
+            // casting to 'uint16' is safe because feeBps is validated by setFeeConfig (max 100)
+            // forge-lint: disable-next-line(unsafe-typecast)
             payRouter.setFeeConfig(feeRecipient, uint16(feeBps));
             console.log("  Fee config set:", feeBps, "bps to", feeRecipient);
         }

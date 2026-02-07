@@ -6,9 +6,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // ── Official Uniswap V4 ───────────────────────────────────────
 import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
-import {Commands} from "@uniswap/universal-router/contracts/libraries/Commands.sol";
-import {IV4Router} from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
-import {Actions} from "@uniswap/v4-periphery/src/libraries/Actions.sol";
 import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
 
 // ── Project-specific ──────────────────────────────────────────
@@ -102,14 +99,26 @@ contract PayRouter is IPayRouter {
     /* ─── Modifiers ────────────────────────────────────────────── */
 
     modifier onlyOwner() {
-        if (msg.sender != owner) revert Unauthorized();
+        _checkOwner();
         _;
     }
 
     modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _checkOwner() internal view {
+        if (msg.sender != owner) revert Unauthorized();
+    }
+
+    function _nonReentrantBefore() internal {
         if (_locked == 2) revert Reentrancy();
         _locked = 2;
-        _;
+    }
+
+    function _nonReentrantAfter() internal {
         _locked = 1;
     }
 
@@ -466,10 +475,13 @@ contract PayRouter is IPayRouter {
         if (inv.deadline != 0 && block.timestamp > inv.deadline) revert InvoiceExpired();
     }
 
-    function _invoiceId(Invoice calldata inv) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(inv.receiver, inv.tokenOut, inv.amountOut, inv.deadline, inv.ref, inv.nonce)
-        );
+    function _invoiceId(Invoice calldata inv) internal pure returns (bytes32 id) {
+        /// @solidity memory-safe-assembly
+        assembly {
+            let ptr := mload(0x40)
+            calldatacopy(ptr, inv, 0xc0) // 6 fields × 32 bytes = 192 = 0xc0
+            id := keccak256(ptr, 0xc0)
+        }
     }
 
     function _safeTransfer(address token, address to, uint256 amount) internal {
@@ -505,7 +517,7 @@ contract PayRouter is IPayRouter {
     /// @param _feeBps       Fee in basis points (max 100 = 1%).
     function setFeeConfig(address _feeRecipient, uint16 _feeBps) external onlyOwner {
         if (_feeBps > MAX_FEE_BPS) revert FeeTooHigh();
-        feeConfig = FeeConfig(_feeRecipient, _feeBps);
+        feeConfig = FeeConfig({ feeRecipient: _feeRecipient, feeBps: _feeBps });
         emit FeeConfigUpdated(_feeRecipient, _feeBps);
     }
 

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {PayRouter} from "../src/PayRouter.sol";
 import {IPayRouter} from "../src/interfaces/IPayRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
 
 /* ═══════════════════════════════════════════════════════════════════
  *                          MOCK CONTRACTS
@@ -101,7 +100,8 @@ contract MockUniversalRouter {
     function execute(bytes calldata, bytes[] calldata, uint256) external payable {
         uint256 inBal = tokenIn.allowance(msg.sender, address(this));
         if (inBal > 0) {
-            tokenIn.transferFrom(msg.sender, address(this), inBal);
+            bool ok = tokenIn.transferFrom(msg.sender, address(this), inBal);
+            require(ok, "transferFrom failed");
             uint256 outAmount = (inBal * rate) / 1e6;
             tokenOut.mint(msg.sender, outAmount);
         }
