@@ -11,7 +11,17 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NFCReaderUsageDescription": "AbiPago uses NFC to read and write payment tags."
+        "NFCReaderUsageDescription": "AbiPago uses NFC to read and write payment tags.",
+        "LSApplicationQueriesSchemes": [
+          "metamask",
+          "trust",
+          "safe",
+          "rainbow",
+          "uniswap",
+          "zerion",
+          "imtokenv2",
+          "argent"
+        ]
       },
       "bundleIdentifier": "com.anonymous.frontend"
     },

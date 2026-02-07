@@ -3,7 +3,7 @@
  * and primary actions (Pay / Receive).
  * Adapted from: stitch/home_dashboard/code.html
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -16,9 +16,49 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
+import { useAppKit, useAccount } from '@/services/appkit';
+import { resolveName, resolveAvatar, formatAddress } from '@/services/ens';
 
 export default function HomeDashboard() {
   const router = useRouter();
+  const { open } = useAppKit();
+  const { address, isConnected, chainId } = useAccount();
+
+  const [ensName, setEnsName] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+
+  // Resolve ENS reverse name + avatar when address changes
+  useEffect(() => {
+    if (!address) {
+      setEnsName(null);
+      setAvatarUrl(null);
+      return;
+    }
+    (async () => {
+      try {
+        const name = await resolveName(address as `0x${string}`);
+        setEnsName(name);
+        if (name) {
+          const avatar = await resolveAvatar(name);
+          setAvatarUrl(avatar);
+        }
+      } catch {
+        // ENS resolution may fail silently
+      }
+    })();
+  }, [address]);
+
+  const CHAIN_MAP: Record<number, string> = {
+    1: 'Ethereum',
+    10: 'Optimism',
+    137: 'Polygon',
+    8453: 'Base',
+    42161: 'Arbitrum',
+  };
+
+  const networkLabel = chainId ? CHAIN_MAP[chainId] ?? `#${chainId}` : '—';
+  const displayName = ensName ?? (address ? formatAddress(address) : 'Not Connected');
+  const displayAddr = address ? formatAddress(address) : '—';
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -35,11 +75,17 @@ export default function HomeDashboard() {
         showsVerticalScrollIndicator={false}
       >
         {/* ── Connection Status Card ────────────────────────────── */}
-        <View style={styles.statusCard}>
+        <TouchableOpacity style={styles.statusCard} activeOpacity={0.7} onPress={() => open()}>
           <View style={styles.statusCol}>
             <View style={styles.statusRow}>
-              <MaterialIcons name="check-circle" size={16} color={C.success} />
-              <Text style={[styles.statusVal, { color: C.success }]}>Active</Text>
+              <MaterialIcons
+                name={isConnected ? 'check-circle' : 'error-outline'}
+                size={16}
+                color={isConnected ? C.success : C.gray500}
+              />
+              <Text style={[styles.statusVal, { color: isConnected ? C.success : C.gray500 }]}>
+                {isConnected ? 'Active' : 'Disconnected'}
+              </Text>
             </View>
             <Text style={styles.statusLabel}>Status</Text>
           </View>
@@ -49,7 +95,7 @@ export default function HomeDashboard() {
           <View style={styles.statusCol}>
             <View style={styles.statusRow}>
               <MaterialIcons name="public" size={16} color={C.blue400} />
-              <Text style={[styles.statusVal, { color: C.blue400 }]}>Base</Text>
+              <Text style={[styles.statusVal, { color: C.blue400 }]}>{networkLabel}</Text>
             </View>
             <Text style={styles.statusLabel}>Network</Text>
           </View>
@@ -59,25 +105,32 @@ export default function HomeDashboard() {
           <View style={styles.statusCol}>
             <View style={styles.statusRow}>
               <MaterialIcons name="account-balance-wallet" size={16} color={C.white} />
-              <Text style={styles.statusVal}>0xA3…e7</Text>
+              <Text style={styles.statusVal}>{displayAddr}</Text>
             </View>
             <Text style={styles.statusLabel}>Wallet</Text>
           </View>
-        </View>
+        </TouchableOpacity>
 
         {/* ── ENS Identity ──────────────────────────────────────── */}
         <View style={styles.identitySection}>
           <View style={styles.avatarRing}>
             <Image
-              source={{ uri: 'https://i.pravatar.cc/128?u=cafeteria' }}
+              source={{ uri: avatarUrl ?? `https://i.pravatar.cc/128?u=${address ?? 'default'}` }}
               style={styles.avatar}
             />
           </View>
-          <Text style={styles.ensName}>cafeteria.eth</Text>
-          <View style={styles.ensBadge}>
-            <View style={styles.ensDot} />
-            <Text style={styles.ensBadgeText}>Primary ENS</Text>
-          </View>
+          <Text style={styles.ensName}>{displayName}</Text>
+          {ensName ? (
+            <View style={styles.ensBadge}>
+              <View style={styles.ensDot} />
+              <Text style={styles.ensBadgeText}>Primary ENS</Text>
+            </View>
+          ) : !isConnected ? (
+            <TouchableOpacity style={styles.ensBadge} onPress={() => open()}>
+              <MaterialIcons name="link" size={14} color={C.primary} />
+              <Text style={[styles.ensBadgeText, { color: C.primary }]}>Connect Wallet</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {/* ── Action Buttons ────────────────────────────────────── */}

@@ -1,7 +1,7 @@
 /**
  * Profile — Settings & ENS profile screen.
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -9,20 +9,69 @@ import {
   TouchableOpacity,
   ScrollView,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
-
-const SETTINGS_ITEMS = [
-  { icon: 'account-balance-wallet' as const, label: 'Connected Wallet', value: '0xA3…e7' },
-  { icon: 'public' as const, label: 'Default Network', value: 'Base' },
-  { icon: 'token' as const, label: 'Default Token', value: 'USDC' },
-  { icon: 'tune' as const, label: 'Max Slippage', value: '0.5%' },
-  { icon: 'notifications' as const, label: 'Notifications', value: 'On' },
-];
+import { useAppKit, useAccount } from '@/services/appkit';
+import {
+  resolveName,
+  resolveAvatar,
+  getPaymentProfile,
+  formatAddress,
+  chainName,
+} from '@/services/ens';
+import type { PaymentProfile } from '@/types';
 
 export default function ProfileScreen() {
+  const { open } = useAppKit();
+  const { address, isConnected, chainId } = useAccount();
+
+  const [ensName, setEnsName] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [payProfile, setPayProfile] = useState<PaymentProfile | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!address) {
+      setEnsName(null);
+      setAvatarUrl(null);
+      setPayProfile(null);
+      return;
+    }
+    (async () => {
+      setLoading(true);
+      try {
+        const name = await resolveName(address as `0x${string}`);
+        setEnsName(name);
+        if (name) {
+          const [avatar, profile] = await Promise.all([
+            resolveAvatar(name),
+            getPaymentProfile(name),
+          ]);
+          setAvatarUrl(avatar);
+          setPayProfile(profile);
+        }
+      } catch {
+        // silent
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [address]);
+
+  const displayAddr = address ? formatAddress(address) : '—';
+  const networkLabel = chainId ? chainName(chainId) : '—';
+
+  const SETTINGS_ITEMS = [
+    { icon: 'account-balance-wallet' as const, label: 'Connected Wallet', value: displayAddr },
+    { icon: 'public' as const, label: 'Default Network', value: networkLabel },
+    { icon: 'token' as const, label: 'Default Token', value: 'USDC' },
+    { icon: 'tune' as const, label: 'Max Slippage', value: `${(payProfile?.slippageBps ?? 50) / 100}%` },
+    { icon: 'notifications' as const, label: 'Notifications', value: 'On' },
+  ];
+
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -31,37 +80,55 @@ export default function ProfileScreen() {
         {/* Avatar + ENS */}
         <View style={styles.profileSection}>
           <Image
-            source={{ uri: 'https://i.pravatar.cc/128?u=cafeteria' }}
+            source={{ uri: avatarUrl ?? `https://i.pravatar.cc/128?u=${address ?? 'default'}` }}
             style={styles.avatar}
           />
-          <Text style={styles.ensName}>cafeteria.eth</Text>
-          <Text style={styles.address}>0x84e5cA5c3a19…3a19</Text>
+          <Text style={styles.ensName}>{ensName ?? (isConnected ? displayAddr : 'Not Connected')}</Text>
+          <Text style={styles.address}>{isConnected ? displayAddr : 'Connect a wallet to get started'}</Text>
         </View>
 
         {/* ENS Payment Profile */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>ENS Payment Profile</Text>
-          <View style={styles.recordRow}>
-            <Text style={styles.recordKey}>pay.receiver</Text>
-            <Text style={styles.recordVal}>0x84e5…3a19</Text>
+        {loading ? (
+          <View style={[styles.card, { alignItems: 'center', paddingVertical: 24 }]}>
+            <ActivityIndicator color={C.primary} />
+            <Text style={[styles.cardTitle, { marginTop: 8, marginBottom: 0 }]}>Loading ENS profile…</Text>
           </View>
-          <View style={styles.recordRow}>
-            <Text style={styles.recordKey}>pay.chainId</Text>
-            <Text style={styles.recordVal}>8453 (Base)</Text>
+        ) : payProfile ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>ENS Payment Profile</Text>
+            <View style={styles.recordRow}>
+              <Text style={styles.recordKey}>pay.receiver</Text>
+              <Text style={styles.recordVal}>{formatAddress(payProfile.receiver)}</Text>
+            </View>
+            <View style={styles.recordRow}>
+              <Text style={styles.recordKey}>pay.chainId</Text>
+              <Text style={styles.recordVal}>{payProfile.chainId} ({chainName(payProfile.chainId)})</Text>
+            </View>
+            <View style={styles.recordRow}>
+              <Text style={styles.recordKey}>pay.token</Text>
+              <Text style={styles.recordVal}>{formatAddress(payProfile.token)}</Text>
+            </View>
+            {payProfile.slippageBps !== undefined && (
+              <View style={styles.recordRow}>
+                <Text style={styles.recordKey}>pay.slippageBps</Text>
+                <Text style={styles.recordVal}>{payProfile.slippageBps} ({payProfile.slippageBps / 100}%)</Text>
+              </View>
+            )}
+            {payProfile.memo && (
+              <View style={styles.recordRow}>
+                <Text style={styles.recordKey}>pay.memo</Text>
+                <Text style={styles.recordVal}>{payProfile.memo}</Text>
+              </View>
+            )}
           </View>
-          <View style={styles.recordRow}>
-            <Text style={styles.recordKey}>pay.token</Text>
-            <Text style={styles.recordVal}>USDC</Text>
+        ) : isConnected && ensName ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>ENS Payment Profile</Text>
+            <Text style={{ color: C.textTertiary, fontSize: 13, textAlign: 'center', paddingVertical: 12 }}>
+              No AbiPago payment records found for {ensName}
+            </Text>
           </View>
-          <View style={styles.recordRow}>
-            <Text style={styles.recordKey}>pay.slippageBps</Text>
-            <Text style={styles.recordVal}>50 (0.5%)</Text>
-          </View>
-          <View style={styles.recordRow}>
-            <Text style={styles.recordKey}>pay.memo</Text>
-            <Text style={styles.recordVal}>Cafetería SCZ</Text>
-          </View>
-        </View>
+        ) : null}
 
         {/* Settings */}
         <View style={styles.card}>
@@ -77,9 +144,11 @@ export default function ProfileScreen() {
         </View>
 
         {/* Connect / Disconnect */}
-        <TouchableOpacity style={styles.connectBtn}>
+        <TouchableOpacity style={styles.connectBtn} onPress={() => open()}>
           <MaterialIcons name="link" size={20} color={C.primary} />
-          <Text style={styles.connectText}>Connect Wallet (WalletConnect)</Text>
+          <Text style={styles.connectText}>
+            {isConnected ? 'Wallet Options' : 'Connect Wallet (WalletConnect)'}
+          </Text>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>

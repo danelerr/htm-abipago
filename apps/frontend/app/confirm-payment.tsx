@@ -2,7 +2,7 @@
  * Confirm Payment — shows merchant, amount, route details, fees.
  * Adapted from: stitch/confirm_payment_details/code.html
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -10,17 +10,97 @@ import {
   TouchableOpacity,
   ScrollView,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
 import { MOCK_ROUTE, MOCK_INVOICE } from '@/types';
+import type { RouteInfo } from '@/types';
 import SwipeButton from '@/components/ui/swipe-button';
+import { useAccount } from '@/services/appkit';
+import { chainName } from '@/services/ens';
+import { getQuoteToAmount, type LiFiStep } from '@/services/lifi';
 
 export default function ConfirmPaymentScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    ens?: string;
+    amount?: string;
+    ref?: string;
+    assetHint?: string;
+    receiver?: string;
+    destChainId?: string;
+    destToken?: string;
+    slippageBps?: string;
+    memo?: string;
+    routerAddr?: string;
+  }>();
+  const { address } = useAccount();
+
+  // Merge incoming params with mock fallbacks
+  const merchantEns = params.ens ?? MOCK_INVOICE.ens;
+  const payAmount = params.amount ?? MOCK_INVOICE.amount;
+  const payRef = params.ref ?? MOCK_INVOICE.ref;
+  const destChainId = params.destChainId ? parseInt(params.destChainId, 10) : MOCK_ROUTE.toChainId;
+  const destChainLabel = chainName(destChainId);
+
+  // Route fetching state
+  const [routeInfo, setRouteInfo] = useState<RouteInfo>(MOCK_ROUTE);
+  const [lifiQuote, setLifiQuote] = useState<LiFiStep | null>(null);
+  const [fetchingRoute, setFetchingRoute] = useState(false);
+
+  // Fetch a real LI.FI quote when wallet is connected and we have real params
+  useEffect(() => {
+    if (!address || !params.destToken || !params.destChainId) return;
+    let cancelled = false;
+    (async () => {
+      setFetchingRoute(true);
+      try {
+        // Payer's source chain — use Arbitrum ETH as default source
+        const quote = await getQuoteToAmount({
+          fromChain: 42161, // Arbitrum
+          toChain: parseInt(params.destChainId!, 10),
+          fromToken: '0x0000000000000000000000000000000000000000', // ETH
+          toToken: params.destToken!,
+          fromAddress: address,
+          toAddress: params.receiver || address,
+          toAmount: (parseFloat(payAmount) * 1e6).toString(), // Assume 6-decimal stablecoin
+          slippage: params.slippageBps ? parseInt(params.slippageBps, 10) / 10000 : 0.005,
+        });
+        if (cancelled) return;
+        setLifiQuote(quote);
+        // Map LI.FI response → RouteInfo for display
+        setRouteInfo({
+          fromChainName: chainName(quote.action.fromChainId),
+          fromChainId: quote.action.fromChainId,
+          toChainName: chainName(quote.action.toChainId),
+          toChainId: quote.action.toChainId,
+          fromToken: quote.action.fromToken.address,
+          fromTokenSymbol: quote.action.fromToken.symbol,
+          toToken: quote.action.toToken.address,
+          toTokenSymbol: quote.action.toToken.symbol,
+          fromAmount: (
+            parseFloat(quote.estimate.fromAmount) /
+            10 ** quote.action.fromToken.decimals
+          ).toFixed(6),
+          toAmount: payAmount,
+          estimatedGasFee: quote.estimate.gasCosts?.[0]
+            ? `~$${quote.estimate.gasCosts[0].amountUSD}`
+            : MOCK_ROUTE.estimatedGasFee,
+          estimatedTimeSeconds: quote.estimate.executionDuration ?? 120,
+          routeLabel: `${quote.tool} • LI.FI`,
+        });
+      } catch {
+        // Keep mock route on error
+      } finally {
+        if (!cancelled) setFetchingRoute(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [address, params.destToken, params.destChainId, params.receiver, params.slippageBps, payAmount]);
 
   const handleConfirm = () => {
     router.push('/routing-progress');
@@ -42,14 +122,14 @@ export default function ConfirmPaymentScreen() {
         <View style={styles.merchantSection}>
           <View style={styles.avatarWrap}>
             <Image
-              source={{ uri: 'https://i.pravatar.cc/80?u=cafeteria' }}
+              source={{ uri: `https://i.pravatar.cc/80?u=${merchantEns}` }}
               style={styles.avatar}
             />
             <View style={styles.verifiedBadge}>
               <MaterialIcons name="verified" size={16} color={C.primary} />
             </View>
           </View>
-          <Text style={styles.ensName}>{MOCK_INVOICE.ens}</Text>
+          <Text style={styles.ensName}>{merchantEns}</Text>
           <View style={styles.verifiedPill}>
             <MaterialIcons name="check-circle" size={14} color={C.primary} />
             <Text style={styles.verifiedText}>Verified Merchant</Text>
@@ -59,19 +139,27 @@ export default function ConfirmPaymentScreen() {
         {/* ── Invoice Amount ────────────────────────────────────── */}
         <View style={styles.amountSection}>
           <View style={styles.amountRow}>
-            <Text style={styles.amountVal}>{MOCK_INVOICE.amount}</Text>
-            <Text style={styles.amountToken}>{MOCK_INVOICE.assetHint}</Text>
+            <Text style={styles.amountVal}>{payAmount}</Text>
+            <Text style={styles.amountToken}>{params.assetHint || MOCK_INVOICE.assetHint}</Text>
           </View>
-          <Text style={styles.amountFiat}>≈ 0.0012 ETH</Text>
+          <Text style={styles.amountFiat}>≈ {routeInfo.fromAmount} {routeInfo.fromTokenSymbol}</Text>
           <View style={styles.refPill}>
             <MaterialIcons name="local-cafe" size={16} color={C.textSecondary} />
-            <Text style={styles.refText}>Morning Coffee</Text>
+            <Text style={styles.refText}>{payRef || 'Payment'}</Text>
           </View>
         </View>
 
         {/* ── Route Details Card ────────────────────────────────── */}
-        <View style={styles.routeCard}>
-          <Text style={styles.routeTitle}>Route Details</Text>
+        {fetchingRoute ? (
+          <View style={[styles.routeCard, { alignItems: 'center', paddingVertical: 32 }]}>
+            <ActivityIndicator color={C.primary} size="large" />
+            <Text style={[styles.routeTitle, { marginTop: 12, marginBottom: 0 }]}>
+              Finding best route via LI.FI…
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.routeCard}>
+            <Text style={styles.routeTitle}>Route Details</Text>
 
           {/* Source */}
           <View style={styles.routeRow}>
@@ -81,11 +169,11 @@ export default function ConfirmPaymentScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.routeLabel}>You pay</Text>
               <Text style={styles.routeVal}>
-                {MOCK_ROUTE.fromTokenSymbol}{' '}
-                <Text style={styles.routeChain}>on {MOCK_ROUTE.fromChainName}</Text>
+                {routeInfo.fromTokenSymbol}{' '}
+                <Text style={styles.routeChain}>on {routeInfo.fromChainName}</Text>
               </Text>
             </View>
-            <Text style={styles.routeAmount}>{MOCK_ROUTE.fromAmount}</Text>
+            <Text style={styles.routeAmount}>{routeInfo.fromAmount}</Text>
           </View>
 
           {/* Arrow */}
@@ -103,11 +191,11 @@ export default function ConfirmPaymentScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.routeLabel}>Merchant gets</Text>
               <Text style={styles.routeVal}>
-                {MOCK_ROUTE.toTokenSymbol}{' '}
-                <Text style={styles.routeChain}>on {MOCK_ROUTE.toChainName}</Text>
+                {routeInfo.toTokenSymbol}{' '}
+                <Text style={styles.routeChain}>on {routeInfo.toChainName}</Text>
               </Text>
             </View>
-            <Text style={styles.routeAmount}>{MOCK_ROUTE.toAmount}</Text>
+            <Text style={styles.routeAmount}>{routeInfo.toAmount}</Text>
           </View>
 
           {/* Fees */}
@@ -115,22 +203,23 @@ export default function ConfirmPaymentScreen() {
           <View style={styles.feeRow}>
             <MaterialIcons name="local-gas-station" size={18} color={C.textSecondary} />
             <Text style={styles.feeLabel}>Est. Network Fee</Text>
-            <Text style={styles.feeVal}>{MOCK_ROUTE.estimatedGasFee}</Text>
+            <Text style={styles.feeVal}>{routeInfo.estimatedGasFee}</Text>
           </View>
           <View style={styles.feeRow}>
             <MaterialIcons name="tune" size={18} color={C.textSecondary} />
             <Text style={styles.feeLabel}>Max Slippage</Text>
             <View style={styles.slippagePill}>
-              <Text style={styles.slippageText}>Auto (0.5%)</Text>
+              <Text style={styles.slippageText}>Auto ({params.slippageBps ? `${parseInt(params.slippageBps, 10) / 100}%` : '0.5%'})</Text>
             </View>
           </View>
           <View style={styles.feeDivider} />
           <View style={styles.feeRow}>
             <MaterialIcons name="hub" size={18} color={C.textSecondary} />
             <Text style={styles.feeLabel}>Route</Text>
-            <Text style={styles.routeVia}>{MOCK_ROUTE.routeLabel}</Text>
+            <Text style={styles.routeVia}>{routeInfo.routeLabel}</Text>
           </View>
         </View>
+        )}
 
         {/* Partner logos */}
         <View style={styles.partners}>

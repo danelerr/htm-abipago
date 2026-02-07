@@ -2,27 +2,88 @@
  * Pay — Scan QR code or Tap NFC to read a merchant invoice.
  * Adapted from: stitch/pay_-_scan_qr/nfc/code.html
  */
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
+import { getPaymentProfile, isEnsName } from '@/services/ens';
+import type { Invoice } from '@/types';
 
 type ScanMode = 'qr' | 'nfc';
+
+/** Parse an abipago:// URI into an Invoice object */
+function parseAbipagoUri(raw: string): Invoice | null {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== 'abipago:') return null;
+    const ens = url.searchParams.get('ens');
+    const amount = url.searchParams.get('amount');
+    const ref = url.searchParams.get('ref') ?? '';
+    const assetHint = url.searchParams.get('asset') ?? undefined;
+    if (!ens || !amount) return null;
+    return { ens, amount, ref, assetHint };
+  } catch {
+    return null;
+  }
+}
 
 export default function ScanPayScreen() {
   const router = useRouter();
   const [mode, setMode] = useState<ScanMode>('qr');
+  const [resolving, setResolving] = useState(false);
+
+  /** Handle decoded payload from QR or NFC */
+  const handlePayload = useCallback(
+    async (data: string) => {
+      // Try to parse as abipago:// URI
+      const invoice = parseAbipagoUri(data);
+
+      if (invoice && isEnsName(invoice.ens)) {
+        setResolving(true);
+        try {
+          const profile = await getPaymentProfile(invoice.ens);
+          // Navigate with invoice + profile params
+          router.push({
+            pathname: '/confirm-payment',
+            params: {
+              ens: invoice.ens,
+              amount: invoice.amount,
+              ref: invoice.ref,
+              assetHint: invoice.assetHint ?? '',
+              // pass profile if resolved
+              receiver: profile?.receiver ?? '',
+              destChainId: profile?.chainId?.toString() ?? '',
+              destToken: profile?.token ?? '',
+              slippageBps: profile?.slippageBps?.toString() ?? '',
+              memo: profile?.memo ?? '',
+              routerAddr: profile?.router ?? '',
+            },
+          });
+        } catch {
+          Alert.alert('Error', 'Failed to resolve ENS payment profile');
+        } finally {
+          setResolving(false);
+        }
+      } else {
+        // Fallback: navigate without profile
+        router.push('/confirm-payment');
+      }
+    },
+    [router],
+  );
 
   const handleScanComplete = () => {
-    // TODO: replace with real QR/NFC payload parsing
-    router.push('/confirm-payment');
+    // Simulate scanning an abipago URI
+    handlePayload('abipago://pay?ens=cafeteria.eth&amount=3.50&ref=coffee42&asset=USDC');
   };
 
   return (
@@ -95,8 +156,16 @@ export default function ScanPayScreen() {
             <Text style={styles.nfcSub}>
               Place your phone close to the merchant&apos;s NFC tag to read the invoice.
             </Text>
-            <TouchableOpacity style={styles.nfcSimBtn} onPress={handleScanComplete}>
-              <Text style={styles.nfcSimText}>Simulate NFC Read</Text>
+            <TouchableOpacity
+              style={[styles.nfcSimBtn, resolving && { opacity: 0.6 }]}
+              onPress={handleScanComplete}
+              disabled={resolving}
+            >
+              {resolving ? (
+                <ActivityIndicator size="small" color={C.primaryDark} />
+              ) : (
+                <Text style={styles.nfcSimText}>Simulate NFC Read</Text>
+              )}
             </TouchableOpacity>
           </View>
         )}
