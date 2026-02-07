@@ -5,11 +5,14 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "abipago",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NFCReaderUsageDescription": "AbiPago uses NFC to read and write payment tags."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -27,6 +30,20 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "AbiPago needs camera access to scan QR code invoices."
+        }
+      ],
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "AbiPago needs NFC access to read and write payment tags.",
+          "selectIdentifiers": [],
+          "systemCodes": []
+        }
+      ],
       [
         "expo-splash-screen",
         {

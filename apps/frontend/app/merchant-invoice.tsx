@@ -2,7 +2,7 @@
  * Merchant Create Invoice — amount input, note, generate QR or write NFC.
  * Adapted from: stitch/merchant_create_invoice/code.html
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -15,10 +15,13 @@ import {
   ScrollView,
   Image,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
+import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
+import * as Haptics from 'expo-haptics';
 import { C, S, R } from '@/constants/theme';
 
 export default function MerchantInvoiceScreen() {
@@ -26,18 +29,54 @@ export default function MerchantInvoiceScreen() {
   const [amount, setAmount] = useState('15.00');
   const [note, setNote] = useState('');
   const [tipEnabled, setTipEnabled] = useState(false);
+  const [nfcSupported, setNfcSupported] = useState<boolean | null>(null);
+  const [nfcWriting, setNfcWriting] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const supported = await NfcManager.isSupported();
+        setNfcSupported(supported);
+        if (supported) await NfcManager.start();
+      } catch {
+        setNfcSupported(false);
+      }
+    })();
+  }, []);
+
+  const buildInvoiceUri = () =>
+    `abipago://pay?ens=cafeteria.eth&amount=${amount}&ref=${note || 'inv-' + Date.now()}&assetHint=USDC`;
 
   const handleGenerateQR = () => {
-    // TODO: generate QR with abipago:// deep link
-    Alert.alert(
-      'Invoice QR',
-      `abipago://pay?ens=cafeteria.eth&amount=${amount}&ref=${note || 'inv-' + Date.now()}&assetHint=USDC`,
-    );
+    const uri = buildInvoiceUri();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert('Invoice QR', uri);
   };
 
-  const handleWriteNFC = () => {
-    // TODO: write NDEF tag using react-native-nfc-manager
-    Alert.alert('NFC', 'NFC write – requires native build with react-native-nfc-manager');
+  const handleWriteNFC = async () => {
+    if (!nfcSupported) {
+      Alert.alert('NFC Not Available', 'This device does not support NFC.');
+      return;
+    }
+    const uri = buildInvoiceUri();
+    try {
+      setNfcWriting(true);
+      await NfcManager.requestTechnology(NfcTech.Ndef);
+
+      const bytes = Ndef.encodeMessage([Ndef.textRecord(uri)]);
+      if (bytes) {
+        await NfcManager.ndefHandler.writeNdefMessage(bytes);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Success', 'Invoice written to NFC tag!');
+      }
+    } catch (e: any) {
+      if (!e?.message?.includes('cancelled')) {
+        Alert.alert('NFC Write Error', e?.message || 'Could not write to NFC tag.');
+      }
+    } finally {
+      NfcManager.cancelTechnologyRequest().catch(() => {});
+      setNfcWriting(false);
+    }
   };
 
   return (
@@ -134,9 +173,13 @@ export default function MerchantInvoiceScreen() {
             <MaterialIcons name="qr-code-2" size={22} color={C.black} />
             <Text style={styles.qrBtnText}>Generate QR</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.nfcBtn} onPress={handleWriteNFC} activeOpacity={0.85}>
-            <MaterialIcons name="contactless" size={22} color={C.white} />
-            <Text style={styles.nfcBtnText}>Write NFC Tag</Text>
+          <TouchableOpacity style={styles.nfcBtn} onPress={handleWriteNFC} activeOpacity={0.85} disabled={nfcWriting}>
+            {nfcWriting ? (
+              <ActivityIndicator size="small" color={C.white} />
+            ) : (
+              <MaterialIcons name="contactless" size={22} color={C.white} />
+            )}
+            <Text style={styles.nfcBtnText}>{nfcWriting ? 'Hold near tag…' : 'Write NFC Tag'}</Text>
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>

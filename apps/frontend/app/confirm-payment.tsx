@@ -12,10 +12,12 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
 import { MOCK_ROUTE, MOCK_INVOICE } from '@/types';
+import SwipeButton from '@/components/ui/swipe-button';
 
 export default function ConfirmPaymentScreen() {
   const router = useRouter();
@@ -140,13 +142,13 @@ export default function ConfirmPaymentScreen() {
 
       {/* ── Bottom Action Bar ───────────────────────────────────── */}
       <View style={styles.bottomBar}>
-        <TouchableOpacity style={styles.confirmBtn} onPress={handleConfirm} activeOpacity={0.85}>
-          <View style={styles.confirmArrow}>
-            <MaterialIcons name="arrow-forward" size={20} color={C.primaryDark} />
-          </View>
-          <Text style={styles.confirmText}>Confirm & Pay</Text>
-          <Text style={styles.confirmTotal}>$3.62 Total</Text>
-        </TouchableOpacity>
+        <GestureHandlerRootView>
+          <SwipeButton
+            label="Slide to Confirm"
+            subLabel="$3.62 Total"
+            onSwipeComplete={handleConfirm}
+          />
+        </GestureHandlerRootView>
         <TouchableOpacity onPress={() => router.back()}>
           <Text style={styles.cancelText}>Cancel Transaction</Text>
         </TouchableOpacity>
@@ -266,17 +268,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: S.lg, paddingTop: S.md, paddingBottom: 40,
     gap: 12, alignItems: 'center',
   },
-  confirmBtn: {
-    width: '100%', height: 56, backgroundColor: C.primary,
-    borderRadius: R.full, flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 8,
-  },
-  confirmArrow: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.1)',
-    alignItems: 'center', justifyContent: 'center', marginRight: 12,
-  },
-  confirmText: { fontSize: 17, fontWeight: '700', color: C.primaryDark, flex: 1 },
-  confirmTotal: { fontSize: 13, fontWeight: '500', color: C.primaryDark + 'AA', marginRight: 16 },
   cancelText: { fontSize: 14, fontWeight: '500', color: C.textTertiary, paddingVertical: 8 },
 });
