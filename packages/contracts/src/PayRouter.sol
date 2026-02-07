@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 // ── Official Uniswap V4 ───────────────────────────────────────
 import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
 import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
+import {IAllowanceTransfer} from "@uniswap/permit2/src/interfaces/IAllowanceTransfer.sol";
 
 // ── Project-specific ──────────────────────────────────────────
 import {IPayRouter} from "./interfaces/IPayRouter.sol";
@@ -35,11 +36,6 @@ import {IPayRouter} from "./interfaces/IPayRouter.sol";
  *   • Commands.V4_SWAP (0x10) — swap command for Universal Router
  *   • Actions.SWAP_EXACT_IN_SINGLE / SETTLE_ALL / TAKE_ALL
  *   • IV4Router.ExactInputSingleParams — swap parameter struct
- *
- * Bounties targeted:
- *   • Uniswap Foundation — V4 swap integration
- *   • LI.FI — cross-chain Composer endpoint (contractCall)
- *   • ENS — payment profile resolution (off-chain, ref stored here)
  */
 contract PayRouter is IPayRouter {
     /* ─── Constants ────────────────────────────────────────────── */
@@ -55,6 +51,7 @@ contract PayRouter is IPayRouter {
     address public owner;
     IUniversalRouter public universalRouter;
     IWETH9 public weth;
+    IAllowanceTransfer public immutable PERMIT2;
 
     /// @notice Protocol fee configuration (optional, default = no fee).
     FeeConfig public feeConfig;
@@ -86,12 +83,15 @@ contract PayRouter is IPayRouter {
 
     /// @param _universalRouter Address of Uniswap's Universal Router on this chain.
     /// @param _weth            Address of WETH (wrapped native) on this chain.
-    constructor(address _universalRouter, address _weth) {
+    /// @param _permit2         Address of Uniswap Permit2 on this chain.
+    constructor(address _universalRouter, address _weth, address _permit2) {
         if (_universalRouter == address(0)) revert ZeroAddress();
         if (_weth == address(0)) revert ZeroAddress();
+        if (_permit2 == address(0)) revert ZeroAddress();
         owner = msg.sender;
         universalRouter = IUniversalRouter(_universalRouter);
         weth = IWETH9(_weth);
+        PERMIT2 = IAllowanceTransfer(_permit2);
 
         emit OwnershipTransferred(address(0), msg.sender);
     }
@@ -273,7 +273,7 @@ contract PayRouter is IPayRouter {
         bool needsSwap = tokenIn != sharedTokenOut;
 
         if (needsSwap && swapData.length > 0) {
-            IERC20(tokenIn).approve(address(universalRouter), amountIn);
+            _approvePermit2(tokenIn, amountIn);
             (bytes memory commands, bytes[] memory inputs, uint256 deadline) =
                 abi.decode(swapData, (bytes, bytes[], uint256));
             universalRouter.execute(commands, inputs, deadline);
@@ -377,47 +377,6 @@ contract PayRouter is IPayRouter {
     /**
      * @dev Approve Universal Router, execute V4 swap, verify output, pay merchant.
      *
-     * The `swapData` should be ABI-encoded as:
-     *   abi.encode(bytes commands, bytes[] inputs, uint256 deadline)
-     *
-     * For a V4_SWAP (Commands.V4_SWAP = 0x10), the input encodes:
-     *   - actions: packed bytes of action IDs from the Actions library
-     *       Actions.SWAP_EXACT_IN_SINGLE = 0x06
-     *       Actions.SETTLE_ALL           = 0x0c
-     *       Actions.TAKE_ALL             = 0x0f
-     *   - params[]: ABI-encoded params for each action
-     *       params[0]: IV4Router.ExactInputSingleParams
-     *       params[1]: abi.encode(currency0, maxAmount)   // SETTLE_ALL
-     *       params[2]: abi.encode(currency1, minAmount)   // TAKE_ALL
-     *
-     * Example construction (off-chain, ethers.js):
-     *
-     *   // import Commands from universal-router/contracts/libraries/Commands.sol
-     *   // import Actions  from v4-periphery/src/libraries/Actions.sol
-     *
-     *   const actions = ethers.solidityPacked(
-     *     ['uint8', 'uint8', 'uint8'],
-     *     [Actions.SWAP_EXACT_IN_SINGLE, Actions.SETTLE_ALL, Actions.TAKE_ALL]
-     *   );
-     *   const swapParam = ethers.AbiCoder.defaultAbiCoder().encode(
-     *     ['tuple(tuple(address,address,uint24,int24,address),bool,uint128,uint128,bytes)'],
-     *     [exactInputSingleParams]
-     *   );
-     *   const settleParam = ethers.AbiCoder.defaultAbiCoder().encode(
-     *     ['address', 'uint256'], [tokenIn, maxAmount]
-     *   );
-     *   const takeParam = ethers.AbiCoder.defaultAbiCoder().encode(
-     *     ['address', 'uint256'], [tokenOut, minAmount]
-     *   );
-     *   const v4Input = ethers.AbiCoder.defaultAbiCoder().encode(
-     *     ['bytes', 'bytes[]'],
-     *     [actions, [swapParam, settleParam, takeParam]]
-     *   );
-     *   const commands = ethers.solidityPacked(['uint8'], [Commands.V4_SWAP]);
-     *   const swapData = ethers.AbiCoder.defaultAbiCoder().encode(
-     *     ['bytes', 'bytes[]', 'uint256'],
-     *     [commands, [v4Input], deadline]
-     *   );
      */
     function _swapAndPay(
         address tokenIn,
@@ -426,8 +385,8 @@ contract PayRouter is IPayRouter {
         bytes calldata swapData,
         address refundTo
     ) internal returns (uint256 fee) {
-        // Approve Universal Router to spend tokenIn
-        IERC20(tokenIn).approve(address(universalRouter), amountIn);
+        // Approve Permit2 → Universal Router to spend tokenIn
+        _approvePermit2(tokenIn, amountIn);
 
         if (swapData.length > 0) {
             (bytes memory commands, bytes[] memory inputs, uint256 deadline) =
@@ -492,6 +451,19 @@ contract PayRouter is IPayRouter {
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
         bool ok = IERC20(token).transferFrom(from, to, amount);
         if (!ok) revert TransferFailed();
+    }
+
+    /// @dev Approve Permit2 for tokenIn (max once per token), then grant
+    ///      the Universal Router an allowance via Permit2 for the exact amount.
+    function _approvePermit2(address token, uint256 amount) internal {
+        // ERC20 approve Permit2 (infinite, only if needed)
+        if (IERC20(token).allowance(address(this), address(PERMIT2)) < amount) {
+            IERC20(token).approve(address(PERMIT2), type(uint256).max);
+        }
+        // Permit2 approve Universal Router for exact amount (short expiry)
+        // casting to 'uint160' and 'uint48' is safe: real ERC20 amounts fit uint160, timestamp fits uint48
+        // forge-lint: disable-next-line(unsafe-typecast)
+        PERMIT2.approve(token, address(universalRouter), uint160(amount), uint48(block.timestamp + 1800));
     }
 
     /* ═══════════════════════════════════════════════════════════════

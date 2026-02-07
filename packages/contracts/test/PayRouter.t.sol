@@ -82,29 +82,57 @@ contract MockWETH is MockERC20 {
     }
 }
 
-/// @dev Mock Universal Router that simulates V4 swaps.
-///      Takes all approved tokenIn from caller, mints tokenOut at given rate.
+/// @dev Mock Universal Router that simulates V4 swaps via Permit2.
+///      Pulls tokenIn from caller through MockPermit2, mints tokenOut at given rate.
 contract MockUniversalRouter {
     MockERC20 public tokenIn;
     MockERC20 public tokenOut;
     uint256 public rate; // tokenOut per tokenIn (scaled 1e6)
+    MockPermit2 public permit2;
 
-    constructor(MockERC20 _tokenIn, MockERC20 _tokenOut, uint256 _rate) {
+    constructor(MockERC20 _tokenIn, MockERC20 _tokenOut, uint256 _rate, MockPermit2 _permit2) {
         tokenIn = _tokenIn;
         tokenOut = _tokenOut;
         rate = _rate;
+        permit2 = _permit2;
     }
 
     function setRate(uint256 _rate) external { rate = _rate; }
 
     function execute(bytes calldata, bytes[] calldata, uint256) external payable {
-        uint256 inBal = tokenIn.allowance(msg.sender, address(this));
-        if (inBal > 0) {
-            bool ok = tokenIn.transferFrom(msg.sender, address(this), inBal);
-            require(ok, "transferFrom failed");
-            uint256 outAmount = (inBal * rate) / 1e6;
+        // Real Universal Router pulls tokens via Permit2
+        uint256 allowed = permit2.allowance(msg.sender, address(tokenIn), address(this));
+        if (allowed > 0) {
+        // casting to 'uint160' is safe because MockUniversalRouter already validates via permit2 allowance
+        // forge-lint: disable-next-line(unsafe-typecast)
+            permit2.transferFrom(msg.sender, address(this), uint160(allowed), address(tokenIn));
+            uint256 outAmount = (allowed * rate) / 1e6;
             tokenOut.mint(msg.sender, outAmount);
         }
+    }
+}
+
+/// @dev Mock Permit2 that implements allowance-based transfer.
+///      Mirrors the real Permit2 approve() + transferFrom() flow.
+contract MockPermit2 {
+    // token => owner => spender => amount
+    mapping(address => mapping(address => mapping(address => uint160))) private _allowances;
+
+    function approve(address token, address spender, uint160 amount, uint48 /*expiration*/) external {
+        _allowances[token][msg.sender][spender] = amount;
+    }
+
+    function allowance(address owner, address token, address spender) external view returns (uint160) {
+        return _allowances[token][owner][spender];
+    }
+
+    function transferFrom(address from, address to, uint160 amount, address token) external {
+        uint160 allowed = _allowances[token][from][msg.sender];
+        require(allowed >= amount, "MockPermit2: insufficient allowance");
+        _allowances[token][from][msg.sender] = allowed - amount;
+        // Use ERC20 transferFrom (Permit2 needs ERC20 approval from `from`)
+        bool ok = IERC20(token).transferFrom(from, to, amount);
+        require(ok, "MockPermit2: transfer failed");
     }
 }
 
@@ -125,6 +153,7 @@ contract PayRouterTest is Test {
     MockWETH public wethToken;
     MockERC20 public dai;
     MockUniversalRouter public uniRouter;
+    MockPermit2 public mockPermit2;
 
     address public merchant = makeAddr("merchant");
     address public merchant2 = makeAddr("merchant2");
@@ -136,11 +165,12 @@ contract PayRouterTest is Test {
         usdc = new MockERC20("USD Coin", "USDC");
         dai = new MockERC20("DAI Stablecoin", "DAI");
         wethToken = new MockWETH();
+        mockPermit2 = new MockPermit2();
         // 1 WETH = 2800 USDC (rate = 2800e6)
-        uniRouter = new MockUniversalRouter(MockERC20(address(wethToken)), usdc, 2800e6);
+        uniRouter = new MockUniversalRouter(MockERC20(address(wethToken)), usdc, 2800e6, mockPermit2);
 
         vm.prank(deployer);
-        router = new PayRouter(address(uniRouter), address(wethToken));
+        router = new PayRouter(address(uniRouter), address(wethToken), address(mockPermit2));
     }
 
     /* ─────────────────────────────────────────────────────────────
@@ -159,14 +189,23 @@ contract PayRouterTest is Test {
         assertEq(address(router.weth()), address(wethToken));
     }
 
+    function test_constructor_setsPermit2() public view {
+        assertEq(address(router.PERMIT2()), address(mockPermit2));
+    }
+
     function test_constructor_revert_zeroRouter() public {
         vm.expectRevert(PayRouter.ZeroAddress.selector);
-        new PayRouter(address(0), address(wethToken));
+        new PayRouter(address(0), address(wethToken), address(mockPermit2));
     }
 
     function test_constructor_revert_zeroWeth() public {
         vm.expectRevert(PayRouter.ZeroAddress.selector);
-        new PayRouter(address(uniRouter), address(0));
+        new PayRouter(address(uniRouter), address(0), address(mockPermit2));
+    }
+
+    function test_constructor_revert_zeroPermit2() public {
+        vm.expectRevert(PayRouter.ZeroAddress.selector);
+        new PayRouter(address(uniRouter), address(wethToken), address(0));
     }
 
     /* ─────────────────────────────────────────────────────────────

@@ -24,33 +24,6 @@ import {PayRouter} from "../src/PayRouter.sol";
  *     --verifier-url https://unichain-sepolia.blockscout.com/api/ \
  *     -vvvv
  *
- * Required env vars:
- *   PRIVATE_KEY         — deployer private key
- *
- * Optional env vars:
- *   UNIVERSAL_ROUTER    — override Universal Router address (default: Unichain mainnet)
- *   WETH                — override WETH address (default: Unichain 0x4200...0006)
- *   FEE_RECIPIENT       — address for protocol fees (default: none)
- *   FEE_BPS             — fee in basis points, max 100 (default: 0)
- *
- * ┌─────────────────────────────────────────────────────────┐
- * │  Unichain Addresses                                    │
- * ├─────────────┬───────────────────────────────────────────┤
- * │  Contract   │  Address                                  │
- * ├─────────────┼───────────────────────────────────────────┤
- * │  Universal  │  Mainnet:  0xef740bf23acae26f6492b10de645 │
- * │  Router     │           d6b98dc8eaf3                    │
- * │             │  Sepolia:  0xf70536b3bcc1bd1a972dc186a2cf │
- * │             │           84cc6da6be5d                    │
- * ├─────────────┼───────────────────────────────────────────┤
- * │  WETH9      │  0x4200000000000000000000000000000000000006│
- * ├─────────────┼───────────────────────────────────────────┤
- * │  USDC       │  Mainnet:  0x078d782b760474a361dda0af3839 │
- * │             │           290b0ef57ad6                    │
- * │             │  Sepolia:  0x31d0220469e10c4e71834a79b1f2 │
- * │             │           76d740d3768f                    │
- * └─────────────┴───────────────────────────────────────────┘
- *
  * Verify at: https://docs.unichain.org/docs/technical-information/contract-addresses
  */
 contract DeployPayRouter is Script {
@@ -60,6 +33,8 @@ contract DeployPayRouter is Script {
         // Default to Unichain mainnet addresses
         address universalRouter = vm.envOr("UNIVERSAL_ROUTER", address(0xEf740bf23aCaE26f6492B10de645D6B98dC8Eaf3));
         address weth = vm.envOr("WETH", address(0x4200000000000000000000000000000000000006));
+        // Permit2 is canonical across all chains
+        address permit2 = vm.envOr("PERMIT2", address(0x000000000022D473030F116dDEE9F6B43aC78BA3));
 
         // Optional fee config
         address feeRecipient = vm.envOr("FEE_RECIPIENT", address(0));
@@ -68,11 +43,12 @@ contract DeployPayRouter is Script {
         console.log("=== AbiPago Deployment ===");
         console.log("  Universal Router:", universalRouter);
         console.log("  WETH:           ", weth);
+        console.log("  Permit2:        ", permit2);
 
         vm.startBroadcast(deployerPk);
 
         // 1. Deploy PayRouter
-        PayRouter payRouter = new PayRouter(universalRouter, weth);
+        PayRouter payRouter = new PayRouter(universalRouter, weth, permit2);
         console.log("  PayRouter:      ", address(payRouter));
 
         // 2. Set fee config (if provided)
