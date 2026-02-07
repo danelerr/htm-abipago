@@ -8,7 +8,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -94,7 +93,7 @@ export default function ScanPayScreen() {
             </View>
             <Text style={styles.nfcTitle}>Hold near NFC tag</Text>
             <Text style={styles.nfcSub}>
-              Place your phone close to the merchant's NFC tag to read the invoice.
+              Place your phone close to the merchant&apos;s NFC tag to read the invoice.
             </Text>
             <TouchableOpacity style={styles.nfcSimBtn} onPress={handleScanComplete}>
               <Text style={styles.nfcSimText}>Simulate NFC Read</Text>

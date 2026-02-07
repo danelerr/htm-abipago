@@ -14,6 +14,7 @@ import {
   Platform,
   ScrollView,
   Image,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -28,14 +29,15 @@ export default function MerchantInvoiceScreen() {
 
   const handleGenerateQR = () => {
     // TODO: generate QR with abipago:// deep link
-    alert(
-      `Invoice QR:\nabipago://pay?ens=cafeteria.eth&amount=${amount}&ref=${note || 'inv-' + Date.now()}&assetHint=USDC`,
+    Alert.alert(
+      'Invoice QR',
+      `abipago://pay?ens=cafeteria.eth&amount=${amount}&ref=${note || 'inv-' + Date.now()}&assetHint=USDC`,
     );
   };
 
   const handleWriteNFC = () => {
     // TODO: write NDEF tag using react-native-nfc-manager
-    alert('NFC write – requires native build with react-native-nfc-manager');
+    Alert.alert('NFC', 'NFC write – requires native build with react-native-nfc-manager');
   };
 
   return (

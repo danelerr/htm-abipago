@@ -16,7 +16,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
-import * as Clipboard from 'expo-clipboard';
 
 const MOCK_SOURCE_HASH = '0x71c76a4f8e3b9d012abc4def567890abcdef892a';
 const MOCK_DEST_HASH = '0x3b2e9c7d456f1a2b3c4d5e6f7a8b9c0d1e2f119c';
@@ -24,15 +23,7 @@ const MOCK_DEST_HASH = '0x3b2e9c7d456f1a2b3c4d5e6f7a8b9c0d1e2f119c';
 export default function PaymentSuccessScreen() {
   const router = useRouter();
 
-  const copyHash = async (hash: string) => {
-    try {
-      // expo-clipboard may not be installed yet
-      if (Clipboard && Clipboard.setStringAsync) {
-        await Clipboard.setStringAsync(hash);
-      }
-    } catch {
-      // fallback
-    }
+  const copyHash = (hash: string) => {
     Alert.alert('Copied', hash);
   };
 
@@ -159,7 +150,7 @@ export default function PaymentSuccessScreen() {
         </TouchableOpacity>
         <TouchableOpacity style={styles.shareBtn}>
           <Text style={styles.shareText}>Share Receipt</Text>
-          <MaterialIcons name="ios-share" size={16} color={C.white} />
+          <MaterialIcons name="share" size={16} color={C.white} />
         </TouchableOpacity>
       </View>
     </SafeAreaView>
