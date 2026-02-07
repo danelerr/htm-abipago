@@ -3,8 +3,9 @@
   "private": true,
   "packageManager": "pnpm@10.0.0",
   "scripts": {
-    "dev": "pnpm -C apps/mobile start",
-    "mobile": "pnpm -C apps/mobile start",
+    "dev": "pnpm -C apps/frontend start",
+    "mobile": "pnpm -C apps/frontend start",
+    "frontend": "pnpm -C apps/frontend start",
     "contracts:build": "pnpm -C packages/contracts build",
     "contracts:test": "pnpm -C packages/contracts test",
     "contracts:export": "pnpm -C packages/contracts export",
