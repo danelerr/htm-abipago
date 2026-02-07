@@ -1,37 +1,72 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC20} from "./interfaces/IERC20.sol";
+// ── Official OpenZeppelin ──────────────────────────────────────
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+// ── Official Uniswap V4 ───────────────────────────────────────
+import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
+import {Commands} from "@uniswap/universal-router/contracts/libraries/Commands.sol";
+import {IV4Router} from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
+import {Actions} from "@uniswap/v4-periphery/src/libraries/Actions.sol";
+import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
+
+// ── Project-specific ──────────────────────────────────────────
 import {IPayRouter} from "./interfaces/IPayRouter.sol";
-import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
 
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║                     AbiPago — PayRouter                        ║
+ * ║                     AbiPago — PayRouter v2                     ║
  * ╠══════════════════════════════════════════════════════════════════╣
  * ║  Settlement contract deployed on the DESTINATION chain.        ║
  * ║                                                                ║
- * ║  Flow:                                                         ║
- * ║  1. LI.FI bridges funds to this chain                          ║
- * ║  2. Caller (or LI.FI contract call) invokes settle()           ║
- * ║  3. If tokenIn == tokenOut → direct transfer to merchant       ║
- * ║  4. If tokenIn != tokenOut → swap via Uniswap V4, then pay    ║
- * ║  5. Emits PaymentExecuted event (on-chain receipt)             ║
+ * ║  Settlement modes:                                             ║
+ * ║  A. settle()           — User approve+transferFrom             ║
+ * ║  B. settleFromBridge() — LI.FI contractCall (tokens at router) ║
+ * ║  C. settleNative()     — Native ETH → auto-wrap to WETH       ║
+ * ║  D. settleBatch()      — Multiple invoices in one tx           ║
+ * ║                                                                ║
+ * ║  Swap logic:                                                   ║
+ * ║  • tokenIn == tokenOut → direct transfer to merchant           ║
+ * ║  • tokenIn != tokenOut → Uniswap V4 swap via Universal Router ║
+ * ║                                                                ║
+ * ║  Emits PaymentExecuted event (on-chain receipt for every       ║
+ * ║  settlement).                                                  ║
  * ╚══════════════════════════════════════════════════════════════════╝
+ *
+ * Official Uniswap V4 integration:
+ *   • Commands.V4_SWAP (0x10) — swap command for Universal Router
+ *   • Actions.SWAP_EXACT_IN_SINGLE / SETTLE_ALL / TAKE_ALL
+ *   • IV4Router.ExactInputSingleParams — swap parameter struct
  *
  * Bounties targeted:
  *   • Uniswap Foundation — V4 swap integration
- *   • LI.FI — cross-chain Composer endpoint
- *   • ENS — payment profile resolution (off-chain, but ref stored here)
+ *   • LI.FI — cross-chain Composer endpoint (contractCall)
+ *   • ENS — payment profile resolution (off-chain, ref stored here)
  */
 contract PayRouter is IPayRouter {
+    /* ─── Constants ────────────────────────────────────────────── */
+
+    /// @notice Maximum protocol fee: 1% (100 bps).
+    uint16 public constant MAX_FEE_BPS = 100;
+
+    /// @notice Sentinel for native ETH in token fields.
+    address public constant NATIVE_ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
     /* ─── State ────────────────────────────────────────────────── */
 
     address public owner;
     IUniversalRouter public universalRouter;
+    IWETH9 public weth;
+
+    /// @notice Protocol fee configuration (optional, default = no fee).
+    FeeConfig public feeConfig;
 
     /// @notice Tracks settled invoice hashes to prevent replay.
     mapping(bytes32 => bool) public settled;
+
+    /// @notice Reentrancy guard flag.
+    uint256 private _locked = 1;
 
     /* ─── Errors ───────────────────────────────────────────────── */
 
@@ -42,15 +77,25 @@ contract PayRouter is IPayRouter {
     error TransferFailed();
     error Unauthorized();
     error ZeroAddress();
+    error ZeroAmount();
+    error FeeTooHigh();
+    error Reentrancy();
+    error InsufficientNativeValue();
+    error BatchEmpty();
+    error NativeTransferFailed();
 
     /* ─── Constructor ──────────────────────────────────────────── */
 
     /// @param _universalRouter Address of Uniswap's Universal Router on this chain.
-    ///        See deployments: https://docs.uniswap.org/contracts/v4/deployments
-    constructor(address _universalRouter) {
+    /// @param _weth            Address of WETH (wrapped native) on this chain.
+    constructor(address _universalRouter, address _weth) {
         if (_universalRouter == address(0)) revert ZeroAddress();
+        if (_weth == address(0)) revert ZeroAddress();
         owner = msg.sender;
         universalRouter = IUniversalRouter(_universalRouter);
+        weth = IWETH9(_weth);
+
+        emit OwnershipTransferred(address(0), msg.sender);
     }
 
     /* ─── Modifiers ────────────────────────────────────────────── */
@@ -60,8 +105,15 @@ contract PayRouter is IPayRouter {
         _;
     }
 
+    modifier nonReentrant() {
+        if (_locked == 2) revert Reentrancy();
+        _locked = 2;
+        _;
+        _locked = 1;
+    }
+
     /* ═══════════════════════════════════════════════════════════════
-     *  CORE: settle()
+     *  MODE A: settle() — User provides tokens via approve+transferFrom
      * ═══════════════════════════════════════════════════════════════ */
 
     /// @inheritdoc IPayRouter
@@ -70,7 +122,8 @@ contract PayRouter is IPayRouter {
         address tokenIn,
         uint256 amountIn,
         bytes calldata swapData
-    ) external override {
+    ) external override nonReentrant {
+        if (amountIn == 0) revert ZeroAmount();
         _validateInvoice(invoice);
 
         bytes32 invoiceId = _invoiceId(invoice);
@@ -80,20 +133,7 @@ contract PayRouter is IPayRouter {
         // Pull tokenIn from caller
         _safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
 
-        if (tokenIn == invoice.tokenOut) {
-            // ── Direct payment (no swap needed) ──────────────────
-            if (amountIn < invoice.amountOut) revert InsufficientInput();
-            _safeTransfer(invoice.tokenOut, invoice.receiver, invoice.amountOut);
-
-            // Refund dust
-            uint256 dust = amountIn - invoice.amountOut;
-            if (dust > 0) {
-                _safeTransfer(tokenIn, msg.sender, dust);
-            }
-        } else {
-            // ── Swap via Uniswap V4 then pay ─────────────────────
-            _swapAndPay(tokenIn, amountIn, invoice, swapData);
-        }
+        uint256 fee = _settleSingle(invoice, tokenIn, amountIn, swapData);
 
         emit PaymentExecuted(
             invoice.ref,
@@ -103,12 +143,95 @@ contract PayRouter is IPayRouter {
             amountIn,
             invoice.tokenOut,
             invoice.amountOut,
+            fee,
             block.timestamp
         );
     }
 
     /* ═══════════════════════════════════════════════════════════════
-     *  CORE: settleBatch()
+     *  MODE B: settleFromBridge() — LI.FI contractCall
+     *  Tokens already at this contract (LI.FI sent them before call)
+     * ═══════════════════════════════════════════════════════════════ */
+
+    /// @inheritdoc IPayRouter
+    function settleFromBridge(
+        Invoice calldata invoice,
+        address tokenIn,
+        uint256 minAmountIn,
+        bytes calldata swapData
+    ) external override nonReentrant {
+        _validateInvoice(invoice);
+
+        bytes32 invoiceId = _invoiceId(invoice);
+        if (settled[invoiceId]) revert AlreadySettled();
+        settled[invoiceId] = true;
+
+        // Tokens are already at this contract (sent by LI.FI bridge)
+        uint256 balance = IERC20(tokenIn).balanceOf(address(this));
+        if (balance < minAmountIn) revert InsufficientInput();
+
+        uint256 fee = _settleSingle(invoice, tokenIn, balance, swapData);
+
+        emit BridgeSettlement(
+            invoice.ref,
+            invoice.receiver,
+            tokenIn,
+            balance,
+            invoice.tokenOut,
+            invoice.amountOut,
+            block.timestamp
+        );
+
+        emit PaymentExecuted(
+            invoice.ref,
+            invoice.receiver,
+            msg.sender,
+            tokenIn,
+            balance,
+            invoice.tokenOut,
+            invoice.amountOut,
+            fee,
+            block.timestamp
+        );
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+     *  MODE C: settleNative() — Native ETH, auto-wrapped to WETH
+     * ═══════════════════════════════════════════════════════════════ */
+
+    /// @inheritdoc IPayRouter
+    function settleNative(
+        Invoice calldata invoice,
+        bytes calldata swapData
+    ) external payable override nonReentrant {
+        if (msg.value == 0) revert ZeroAmount();
+        _validateInvoice(invoice);
+
+        bytes32 invoiceId = _invoiceId(invoice);
+        if (settled[invoiceId]) revert AlreadySettled();
+        settled[invoiceId] = true;
+
+        // Wrap native ETH → WETH
+        weth.deposit{value: msg.value}();
+
+        address wethAddr = address(weth);
+        uint256 fee = _settleSingle(invoice, wethAddr, msg.value, swapData);
+
+        emit PaymentExecuted(
+            invoice.ref,
+            invoice.receiver,
+            msg.sender,
+            NATIVE_ETH,
+            msg.value,
+            invoice.tokenOut,
+            invoice.amountOut,
+            fee,
+            block.timestamp
+        );
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+     *  MODE D: settleBatch() — Multiple invoices in one tx
      * ═══════════════════════════════════════════════════════════════ */
 
     /// @inheritdoc IPayRouter
@@ -117,27 +240,26 @@ contract PayRouter is IPayRouter {
         address tokenIn,
         uint256 amountIn,
         bytes calldata swapData
-    ) external override {
+    ) external override nonReentrant {
+        uint256 len = invoices.length;
+        if (len == 0) revert BatchEmpty();
+        if (amountIn == 0) revert ZeroAmount();
+
         // Pull total tokenIn once
         _safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
 
-        uint256 totalRequired;
-        for (uint256 i; i < invoices.length; ++i) {
-            totalRequired += invoices[i].amountOut;
-        }
+        // Check if swap is needed (assumes all invoices share same tokenOut)
+        bool needsSwap = tokenIn != invoices[0].tokenOut;
 
-        // If swap is needed, execute it first to convert all tokenIn → tokenOut
-        bool needsSwap = invoices.length > 0 && tokenIn != invoices[0].tokenOut;
         if (needsSwap && swapData.length > 0) {
             IERC20(tokenIn).approve(address(universalRouter), amountIn);
-            // Decode and execute Universal Router commands
             (bytes memory commands, bytes[] memory inputs, uint256 deadline) =
                 abi.decode(swapData, (bytes, bytes[], uint256));
             universalRouter.execute(commands, inputs, deadline);
         }
 
         // Distribute to each receiver
-        for (uint256 i; i < invoices.length; ++i) {
+        for (uint256 i; i < len; ++i) {
             Invoice calldata inv = invoices[i];
             _validateInvoice(inv);
 
@@ -145,25 +267,83 @@ contract PayRouter is IPayRouter {
             if (settled[invoiceId]) revert AlreadySettled();
             settled[invoiceId] = true;
 
-            if (!needsSwap) {
-                _safeTransfer(tokenIn, inv.receiver, inv.amountOut);
-            } else {
-                _safeTransfer(inv.tokenOut, inv.receiver, inv.amountOut);
+            address payToken = needsSwap ? inv.tokenOut : tokenIn;
+            uint256 payAmount = inv.amountOut;
+
+            // Apply fee
+            uint256 fee;
+            if (feeConfig.feeBps > 0 && feeConfig.feeRecipient != address(0)) {
+                fee = (payAmount * feeConfig.feeBps) / 10_000;
+                payAmount -= fee;
+                _safeTransfer(payToken, feeConfig.feeRecipient, fee);
             }
+
+            _safeTransfer(payToken, inv.receiver, payAmount);
 
             emit PaymentExecuted(
                 inv.ref,
                 inv.receiver,
                 msg.sender,
                 tokenIn,
-                inv.amountOut, // approximate per-invoice input
-                inv.tokenOut,
                 inv.amountOut,
+                inv.tokenOut,
+                payAmount,
+                fee,
                 block.timestamp
             );
         }
 
-        emit BatchSettled(invoices.length, block.timestamp);
+        // Refund any dust left
+        uint256 dustIn = IERC20(tokenIn).balanceOf(address(this));
+        if (dustIn > 0) {
+            _safeTransfer(tokenIn, msg.sender, dustIn);
+        }
+        if (needsSwap) {
+            uint256 dustOut = IERC20(invoices[0].tokenOut).balanceOf(address(this));
+            if (dustOut > 0) {
+                _safeTransfer(invoices[0].tokenOut, msg.sender, dustOut);
+            }
+        }
+
+        emit BatchSettled(len, block.timestamp);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+     *  INTERNAL: Single settlement logic (shared by settle / bridge / native)
+     * ═══════════════════════════════════════════════════════════════ */
+
+    /// @dev Executes the core settlement: swap if needed, deduct fee, pay merchant.
+    /// @return fee The protocol fee deducted (0 if disabled).
+    function _settleSingle(
+        Invoice calldata invoice,
+        address tokenIn,
+        uint256 amountIn,
+        bytes calldata swapData
+    ) internal returns (uint256 fee) {
+        if (tokenIn == invoice.tokenOut) {
+            // ── Direct payment (no swap needed) ──────────────────
+            if (amountIn < invoice.amountOut) revert InsufficientInput();
+
+            uint256 payAmount = invoice.amountOut;
+
+            // Protocol fee
+            if (feeConfig.feeBps > 0 && feeConfig.feeRecipient != address(0)) {
+                fee = (payAmount * feeConfig.feeBps) / 10_000;
+                payAmount -= fee;
+                _safeTransfer(invoice.tokenOut, feeConfig.feeRecipient, fee);
+            }
+
+            _safeTransfer(invoice.tokenOut, invoice.receiver, payAmount);
+
+            // Refund dust to caller
+            uint256 dust = amountIn - invoice.amountOut;
+            if (dust > 0) {
+                _safeTransfer(tokenIn, msg.sender, dust);
+            }
+        } else {
+            // ── Swap via Uniswap V4, then pay ────────────────────
+            fee = _swapAndPay(tokenIn, amountIn, invoice, swapData);
+        }
     }
 
     /* ═══════════════════════════════════════════════════════════════
@@ -176,70 +356,83 @@ contract PayRouter is IPayRouter {
      * The `swapData` should be ABI-encoded as:
      *   abi.encode(bytes commands, bytes[] inputs, uint256 deadline)
      *
-     * For a V4_SWAP (command 0x10), the input encodes:
-     *   - actions: packed bytes of action IDs
-     *       0x06 = SWAP_EXACT_IN_SINGLE
-     *       0x0c = SETTLE_ALL
-     *       0x09 = TAKE_ALL
+     * For a V4_SWAP (Commands.V4_SWAP = 0x10), the input encodes:
+     *   - actions: packed bytes of action IDs from the Actions library
+     *       Actions.SWAP_EXACT_IN_SINGLE = 0x06
+     *       Actions.SETTLE_ALL           = 0x0c
+     *       Actions.TAKE_ALL             = 0x0f
      *   - params[]: ABI-encoded params for each action
+     *       params[0]: IV4Router.ExactInputSingleParams
+     *       params[1]: abi.encode(currency0, maxAmount)   // SETTLE_ALL
+     *       params[2]: abi.encode(currency1, minAmount)   // TAKE_ALL
      *
-     * Example construction (off-chain):
-     * ```
-     * const actions = ethers.solidityPacked(
-     *   ['uint8', 'uint8', 'uint8'],
-     *   [0x06, 0x0c, 0x09]
-     * );
-     * const swapParam = ethers.AbiCoder.defaultAbiCoder().encode(
-     *   ['tuple(...)'], [exactInputSingleParams]
-     * );
-     * const settleParam = ethers.AbiCoder.defaultAbiCoder().encode(
-     *   ['address', 'uint256'], [tokenIn, maxAmount]
-     * );
-     * const takeParam = ethers.AbiCoder.defaultAbiCoder().encode(
-     *   ['address', 'uint256'], [tokenOut, minAmount]
-     * );
-     * const v4Input = ethers.AbiCoder.defaultAbiCoder().encode(
-     *   ['bytes', 'bytes[]'],
-     *   [actions, [swapParam, settleParam, takeParam]]
-     * );
-     * const commands = '0x10'; // V4_SWAP
-     * const swapData = ethers.AbiCoder.defaultAbiCoder().encode(
-     *   ['bytes', 'bytes[]', 'uint256'],
-     *   [commands, [v4Input], deadline]
-     * );
-     * ```
+     * Example construction (off-chain, ethers.js):
+     *
+     *   // import Commands from universal-router/contracts/libraries/Commands.sol
+     *   // import Actions  from v4-periphery/src/libraries/Actions.sol
+     *
+     *   const actions = ethers.solidityPacked(
+     *     ['uint8', 'uint8', 'uint8'],
+     *     [Actions.SWAP_EXACT_IN_SINGLE, Actions.SETTLE_ALL, Actions.TAKE_ALL]
+     *   );
+     *   const swapParam = ethers.AbiCoder.defaultAbiCoder().encode(
+     *     ['tuple(tuple(address,address,uint24,int24,address),bool,uint128,uint128,bytes)'],
+     *     [exactInputSingleParams]
+     *   );
+     *   const settleParam = ethers.AbiCoder.defaultAbiCoder().encode(
+     *     ['address', 'uint256'], [tokenIn, maxAmount]
+     *   );
+     *   const takeParam = ethers.AbiCoder.defaultAbiCoder().encode(
+     *     ['address', 'uint256'], [tokenOut, minAmount]
+     *   );
+     *   const v4Input = ethers.AbiCoder.defaultAbiCoder().encode(
+     *     ['bytes', 'bytes[]'],
+     *     [actions, [swapParam, settleParam, takeParam]]
+     *   );
+     *   const commands = ethers.solidityPacked(['uint8'], [Commands.V4_SWAP]);
+     *   const swapData = ethers.AbiCoder.defaultAbiCoder().encode(
+     *     ['bytes', 'bytes[]', 'uint256'],
+     *     [commands, [v4Input], deadline]
+     *   );
      */
     function _swapAndPay(
         address tokenIn,
         uint256 amountIn,
         Invoice calldata invoice,
         bytes calldata swapData
-    ) internal {
+    ) internal returns (uint256 fee) {
         // Approve Universal Router to spend tokenIn
         IERC20(tokenIn).approve(address(universalRouter), amountIn);
 
         if (swapData.length > 0) {
-            // Decode the pre-built Universal Router calldata
             (bytes memory commands, bytes[] memory inputs, uint256 deadline) =
                 abi.decode(swapData, (bytes, bytes[], uint256));
-
             universalRouter.execute(commands, inputs, deadline);
         }
 
-        // After swap, check we have enough tokenOut
-        uint256 balance = IERC20(invoice.tokenOut).balanceOf(address(this));
-        if (balance < invoice.amountOut) revert SwapOutputInsufficient();
+        // Verify sufficient tokenOut after swap
+        uint256 balanceOut = IERC20(invoice.tokenOut).balanceOf(address(this));
+        if (balanceOut < invoice.amountOut) revert SwapOutputInsufficient();
 
-        // Pay merchant
-        _safeTransfer(invoice.tokenOut, invoice.receiver, invoice.amountOut);
+        uint256 payAmount = invoice.amountOut;
 
-        // Refund any excess tokenOut to caller
-        uint256 excess = IERC20(invoice.tokenOut).balanceOf(address(this));
-        if (excess > 0) {
-            _safeTransfer(invoice.tokenOut, msg.sender, excess);
+        // Protocol fee
+        if (feeConfig.feeBps > 0 && feeConfig.feeRecipient != address(0)) {
+            fee = (payAmount * feeConfig.feeBps) / 10_000;
+            payAmount -= fee;
+            _safeTransfer(invoice.tokenOut, feeConfig.feeRecipient, fee);
         }
 
-        // Refund any remaining tokenIn to caller
+        // Pay merchant
+        _safeTransfer(invoice.tokenOut, invoice.receiver, payAmount);
+
+        // Refund excess tokenOut to caller
+        uint256 excessOut = IERC20(invoice.tokenOut).balanceOf(address(this));
+        if (excessOut > 0) {
+            _safeTransfer(invoice.tokenOut, msg.sender, excessOut);
+        }
+
+        // Refund remaining tokenIn to caller
         uint256 remainingIn = IERC20(tokenIn).balanceOf(address(this));
         if (remainingIn > 0) {
             _safeTransfer(tokenIn, msg.sender, remainingIn);
@@ -252,11 +445,15 @@ contract PayRouter is IPayRouter {
 
     function _validateInvoice(Invoice calldata inv) internal view {
         if (inv.receiver == address(0)) revert ZeroAddress();
+        if (inv.tokenOut == address(0)) revert ZeroAddress();
+        if (inv.amountOut == 0) revert ZeroAmount();
         if (inv.deadline != 0 && block.timestamp > inv.deadline) revert InvoiceExpired();
     }
 
     function _invoiceId(Invoice calldata inv) internal pure returns (bytes32) {
-        return keccak256(abi.encode(inv.receiver, inv.tokenOut, inv.amountOut, inv.ref, inv.nonce));
+        return keccak256(
+            abi.encode(inv.receiver, inv.tokenOut, inv.amountOut, inv.deadline, inv.ref, inv.nonce)
+        );
     }
 
     function _safeTransfer(address token, address to, uint256 amount) internal {
@@ -270,26 +467,59 @@ contract PayRouter is IPayRouter {
     }
 
     /* ═══════════════════════════════════════════════════════════════
+     *  VIEW FUNCTIONS
+     * ═══════════════════════════════════════════════════════════════ */
+
+    /// @notice Compute the invoice ID for a given invoice (off-chain pre-computation).
+    function computeInvoiceId(Invoice calldata inv) external pure returns (bytes32) {
+        return _invoiceId(inv);
+    }
+
+    /// @notice Check if an invoice has already been settled.
+    function isSettled(Invoice calldata inv) external view returns (bool) {
+        return settled[_invoiceId(inv)];
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
      *  ADMIN
      * ═══════════════════════════════════════════════════════════════ */
+
+    /// @notice Update protocol fee configuration.
+    /// @param _feeRecipient Address to receive fees (address(0) = disable fees).
+    /// @param _feeBps       Fee in basis points (max 100 = 1%).
+    function setFeeConfig(address _feeRecipient, uint16 _feeBps) external onlyOwner {
+        if (_feeBps > MAX_FEE_BPS) revert FeeTooHigh();
+        feeConfig = FeeConfig(_feeRecipient, _feeBps);
+        emit FeeConfigUpdated(_feeRecipient, _feeBps);
+    }
 
     /// @notice Update Universal Router address (e.g., after Uniswap upgrade).
     function setUniversalRouter(address _router) external onlyOwner {
         if (_router == address(0)) revert ZeroAddress();
         universalRouter = IUniversalRouter(_router);
+        emit UniversalRouterUpdated(_router);
     }
 
     /// @notice Transfer ownership.
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
+        emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
     /// @notice Emergency rescue of stuck tokens.
     function rescue(address token, address to, uint256 amount) external onlyOwner {
+        if (to == address(0)) revert ZeroAddress();
         _safeTransfer(token, to, amount);
     }
 
-    /// @notice Allow contract to receive ETH (for potential native-token swaps).
+    /// @notice Emergency rescue of stuck native ETH.
+    function rescueNative(address payable to, uint256 amount) external onlyOwner {
+        if (to == address(0)) revert ZeroAddress();
+        (bool ok, ) = to.call{value: amount}("");
+        if (!ok) revert NativeTransferFailed();
+    }
+
+    /// @notice Allow contract to receive ETH (for native-token wrapping/swaps).
     receive() external payable {}
 }
