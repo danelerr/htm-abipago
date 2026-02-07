@@ -197,7 +197,7 @@ contract PayRouterTest is Test {
             block.timestamp
         );
 
-        router.settle(inv, address(usdc), 3_500000, "");
+        router.settle(inv, address(usdc), 3_500000, "", payer);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(merchant), 3_500000, "merchant should receive 3.50 USDC");
@@ -219,7 +219,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), 5_000000); // overpay
-        router.settle(inv, address(usdc), 5_000000, "");
+        router.settle(inv, address(usdc), 5_000000, "", payer);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(merchant), 3_000000, "merchant gets exact amount");
@@ -252,7 +252,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         wethToken.approve(address(router), wethAmount);
-        router.settle(inv, address(wethToken), wethAmount, swapData);
+        router.settle(inv, address(wethToken), wethAmount, swapData, payer);
         vm.stopPrank();
 
         assertGe(usdc.balanceOf(merchant), 3_500000, "merchant should receive >= 3.50 USDC");
@@ -280,7 +280,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), 10_000000);
-        router.settle(inv, address(usdc), 10_000000, "");
+        router.settle(inv, address(usdc), 10_000000, "", payer);
         vm.stopPrank();
 
         // fee = 10_000000 * 50 / 10000 = 50000 (0.05 USDC)
@@ -307,12 +307,14 @@ contract PayRouterTest is Test {
             nonce: 1
         });
 
-        // LI.FI executor calls settleFromBridge
+        // LI.FI executor calls settleFromBridge; dust goes to payer, not executor
         address lifiBridge = makeAddr("lifi-executor");
         vm.prank(lifiBridge);
-        router.settleFromBridge(inv, address(usdc), 3_500000, "");
+        router.settleFromBridge(inv, address(usdc), 5_000000, "", payer);
 
         assertEq(usdc.balanceOf(merchant), 3_500000, "merchant receives from bridge");
+        assertEq(usdc.balanceOf(payer), 1_500000, "dust refunded to user, not executor");
+        assertEq(usdc.balanceOf(lifiBridge), 0, "executor keeps nothing");
     }
 
     function test_settleFromBridge_insufficientBalance() public {
@@ -330,7 +332,7 @@ contract PayRouterTest is Test {
         address lifiBridge = makeAddr("lifi-executor");
         vm.prank(lifiBridge);
         vm.expectRevert(PayRouter.InsufficientInput.selector);
-        router.settleFromBridge(inv, address(usdc), 3_500000, "");
+        router.settleFromBridge(inv, address(usdc), 3_500000, "", payer);
     }
 
     /* ─────────────────────────────────────────────────────────────
@@ -350,7 +352,7 @@ contract PayRouterTest is Test {
 
         vm.deal(payer, 2 ether);
         vm.prank(payer);
-        router.settleNative{value: 1 ether}(inv, "");
+        router.settleNative{value: 1 ether}(inv, "", payer);
 
         assertEq(wethToken.balanceOf(merchant), 1 ether, "merchant receives WETH");
     }
@@ -367,7 +369,7 @@ contract PayRouterTest is Test {
 
         vm.prank(payer);
         vm.expectRevert(PayRouter.ZeroAmount.selector);
-        router.settleNative{value: 0}(inv, "");
+        router.settleNative{value: 0}(inv, "", payer);
     }
 
     /* ─────────────────────────────────────────────────────────────
@@ -384,7 +386,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), 10e6);
-        router.settleBatch(invoices, address(usdc), 10e6, "");
+        router.settleBatch(invoices, address(usdc), 10e6, "", payer);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(merchant), 5e6, "merchant should have 3+2=5 USDC");
@@ -396,7 +398,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         vm.expectRevert(PayRouter.BatchEmpty.selector);
-        router.settleBatch(invoices, address(usdc), 1e6, "");
+        router.settleBatch(invoices, address(usdc), 1e6, "", payer);
         vm.stopPrank();
     }
 
@@ -412,13 +414,52 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), 10e6);
-        router.settleBatch(invoices, address(usdc), 10e6, "");
+        router.settleBatch(invoices, address(usdc), 10e6, "", payer);
         vm.stopPrank();
 
         // 1% of 5e6 = 50000 per invoice, total = 100000
         assertEq(usdc.balanceOf(feeRecipient), 100000, "fee recipient gets 1% of total");
         assertEq(usdc.balanceOf(merchant), 5e6 - 50000, "merchant gets amount minus fee");
         assertEq(usdc.balanceOf(merchant2), 5e6 - 50000, "merchant2 gets amount minus fee");
+    }
+
+    function test_settleBatch_revert_tokenOutMismatch() public {
+        usdc.mint(payer, 20e6);
+
+        IPayRouter.Invoice[] memory invoices = new IPayRouter.Invoice[](2);
+        invoices[0] = IPayRouter.Invoice(merchant, address(usdc), 3e6, block.timestamp + 600, keccak256("mismatch-1"), 300);
+        invoices[1] = IPayRouter.Invoice(merchant2, address(dai), 2e6, block.timestamp + 600, keccak256("mismatch-2"), 301);
+
+        vm.startPrank(payer);
+        usdc.approve(address(router), 10e6);
+        vm.expectRevert(PayRouter.TokenOutMismatch.selector);
+        router.settleBatch(invoices, address(usdc), 10e6, "", payer);
+        vm.stopPrank();
+    }
+
+    function test_settleFromBridge_refundsToCorrectAddress() public {
+        // Simulate LI.FI sending 5 USDC but invoice only needs 3.5 USDC
+        usdc.mint(address(router), 5_000000);
+
+        address userRefund = makeAddr("user-refund");
+
+        IPayRouter.Invoice memory inv = IPayRouter.Invoice({
+            receiver: merchant,
+            tokenOut: address(usdc),
+            amountOut: 3_500000,
+            deadline: block.timestamp + 600,
+            ref: keccak256("bridge-refund-test"),
+            nonce: 99
+        });
+
+        // Executor calls settleFromBridge; refund goes to userRefund, NOT executor
+        address executor = makeAddr("bridge-executor");
+        vm.prank(executor);
+        router.settleFromBridge(inv, address(usdc), 5_000000, "", userRefund);
+
+        assertEq(usdc.balanceOf(merchant), 3_500000, "merchant gets exact amount");
+        assertEq(usdc.balanceOf(userRefund), 1_500000, "dust refunded to specified address");
+        assertEq(usdc.balanceOf(executor), 0, "executor receives nothing");
     }
 
     /* ─────────────────────────────────────────────────────────────
@@ -439,11 +480,11 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), 2e6);
-        router.settle(inv, address(usdc), 1e6, "");
+        router.settle(inv, address(usdc), 1e6, "", payer);
 
         usdc.approve(address(router), 2e6);
         vm.expectRevert(PayRouter.AlreadySettled.selector);
-        router.settle(inv, address(usdc), 1e6, "");
+        router.settle(inv, address(usdc), 1e6, "", payer);
         vm.stopPrank();
     }
 
@@ -467,7 +508,7 @@ contract PayRouterTest is Test {
         vm.startPrank(payer);
         usdc.approve(address(router), 1e6);
         vm.expectRevert(PayRouter.InvoiceExpired.selector);
-        router.settle(inv, address(usdc), 1e6, "");
+        router.settle(inv, address(usdc), 1e6, "", payer);
         vm.stopPrank();
     }
 
@@ -485,7 +526,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), 2e6);
-        router.settle(inv, address(usdc), 2e6, "");
+        router.settle(inv, address(usdc), 2e6, "", payer);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(merchant), 2e6);
@@ -506,7 +547,7 @@ contract PayRouterTest is Test {
         vm.startPrank(payer);
         usdc.approve(address(router), 1e6);
         vm.expectRevert(PayRouter.ZeroAddress.selector);
-        router.settle(inv, address(usdc), 1e6, "");
+        router.settle(inv, address(usdc), 1e6, "", payer);
         vm.stopPrank();
     }
 
@@ -525,7 +566,7 @@ contract PayRouterTest is Test {
         vm.startPrank(payer);
         usdc.approve(address(router), 1e6);
         vm.expectRevert(PayRouter.ZeroAddress.selector);
-        router.settle(inv, address(usdc), 1e6, "");
+        router.settle(inv, address(usdc), 1e6, "", payer);
         vm.stopPrank();
     }
 
@@ -541,7 +582,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         vm.expectRevert(PayRouter.ZeroAmount.selector);
-        router.settle(inv, address(usdc), 0, "");
+        router.settle(inv, address(usdc), 0, "", payer);
         vm.stopPrank();
     }
 
@@ -560,7 +601,7 @@ contract PayRouterTest is Test {
         vm.startPrank(payer);
         usdc.approve(address(router), 1e6);
         vm.expectRevert(PayRouter.ZeroAmount.selector);
-        router.settle(inv, address(usdc), 1e6, "");
+        router.settle(inv, address(usdc), 1e6, "", payer);
         vm.stopPrank();
     }
 
@@ -600,7 +641,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), 1e6);
-        router.settle(inv, address(usdc), 1e6, "");
+        router.settle(inv, address(usdc), 1e6, "", payer);
         vm.stopPrank();
 
         assertTrue(router.isSettled(inv), "should be settled after payment");
@@ -705,7 +746,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), amount);
-        router.settle(inv, address(usdc), amount, "");
+        router.settle(inv, address(usdc), amount, "", payer);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(merchant), amount);
@@ -731,7 +772,7 @@ contract PayRouterTest is Test {
 
         vm.startPrank(payer);
         usdc.approve(address(router), amount);
-        router.settle(inv, address(usdc), amount, "");
+        router.settle(inv, address(usdc), amount, "", payer);
         vm.stopPrank();
 
         uint256 expectedFee = (amount * feeBps) / 10_000;

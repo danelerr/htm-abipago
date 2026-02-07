@@ -3,11 +3,10 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {PayRouter} from "../src/PayRouter.sol";
-import {InvoiceRegistry} from "../src/InvoiceRegistry.sol";
 
 /**
  * @title DeployPayRouter
- * @notice Deployment script for AbiPago PayRouter + InvoiceRegistry.
+ * @notice Deployment script for AbiPago PayRouter.
  *
  * Usage:
  *   # Base mainnet (recommended for demo)
@@ -64,19 +63,11 @@ contract DeployPayRouter is Script {
 
         vm.startBroadcast(deployerPK);
 
-        // 1. Deploy InvoiceRegistry
-        InvoiceRegistry invoiceRegistry = new InvoiceRegistry();
-        console.log("  InvoiceRegistry:", address(invoiceRegistry));
-
-        // 2. Deploy PayRouter
+        // 1. Deploy PayRouter
         PayRouter payRouter = new PayRouter(universalRouter, weth);
         console.log("  PayRouter:      ", address(payRouter));
 
-        // 3. Authorize PayRouter in InvoiceRegistry
-        invoiceRegistry.setAuthorizedRouter(address(payRouter), true);
-        console.log("  PayRouter authorized in InvoiceRegistry");
-
-        // 4. Set fee config (if provided)
+        // 2. Set fee config (if provided)
         if (feeRecipient != address(0) && feeBps > 0) {
             payRouter.setFeeConfig(feeRecipient, uint16(feeBps));
             console.log("  Fee config set:", feeBps, "bps to", feeRecipient);
@@ -87,7 +78,6 @@ contract DeployPayRouter is Script {
         console.log("");
         console.log("=== Deployment Complete ===");
         console.log("  PayRouter:       ", address(payRouter));
-        console.log("  InvoiceRegistry: ", address(invoiceRegistry));
         console.log("  Owner:           ", payRouter.owner());
     }
 }

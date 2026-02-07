@@ -79,25 +79,29 @@ interface IPayRouter {
     /// @param tokenIn   The token being provided (from user's wallet).
     /// @param amountIn  The amount of tokenIn being provided.
     /// @param swapData  ABI-encoded swap params for Universal Router (empty if no swap).
+    /// @param refundTo  Address to receive any dust/excess tokens (use payer address, not executor).
     function settle(
         Invoice calldata invoice,
         address tokenIn,
         uint256 amountIn,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) external;
 
     /// @notice Settle an invoice with tokens already at this contract.
     ///         Used by LI.FI Composer's contractCall feature: LI.FI bridges tokens
     ///         to this contract, then calls this function.
-    /// @param invoice     The invoice to settle.
-    /// @param tokenIn     The bridged token already at this contract.
-    /// @param minAmountIn Minimum expected bridged amount (slippage protection).
-    /// @param swapData    ABI-encoded swap params for Universal Router (empty if no swap).
+    /// @param invoice   The invoice to settle.
+    /// @param tokenIn   The bridged token already at this contract.
+    /// @param amountIn  Exact amount of bridged tokens to use (avoids sweeping full balance).
+    /// @param swapData  ABI-encoded swap params for Universal Router (empty if no swap).
+    /// @param refundTo  Address to receive any dust/excess tokens.
     function settleFromBridge(
         Invoice calldata invoice,
         address tokenIn,
-        uint256 minAmountIn,
-        bytes calldata swapData
+        uint256 amountIn,
+        bytes calldata swapData,
+        address refundTo
     ) external;
 
     /// @notice Settle an invoice with native ETH. Wraps ETH → WETH automatically.
@@ -105,20 +109,25 @@ interface IPayRouter {
     ///         If merchant wants another token → WETH is swapped via Uniswap V4.
     /// @param invoice   The invoice to settle.
     /// @param swapData  ABI-encoded swap params for Universal Router (empty if WETH).
+    /// @param refundTo  Address to receive any dust/excess tokens.
     function settleNative(
         Invoice calldata invoice,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) external payable;
 
     /// @notice Settle multiple invoices in one transaction (privacy batch).
-    /// @param invoices  Array of invoices.
+    ///         All invoices MUST share the same tokenOut.
+    /// @param invoices  Array of invoices (all must have same tokenOut).
     /// @param tokenIn   Common input token for all.
     /// @param amountIn  Total amount of tokenIn provided.
     /// @param swapData  Encoded swap data (empty if direct).
+    /// @param refundTo  Address to receive any dust/excess tokens.
     function settleBatch(
         Invoice[] calldata invoices,
         address tokenIn,
         uint256 amountIn,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) external;
 }

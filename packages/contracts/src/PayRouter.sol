@@ -83,6 +83,7 @@ contract PayRouter is IPayRouter {
     error InsufficientNativeValue();
     error BatchEmpty();
     error NativeTransferFailed();
+    error TokenOutMismatch();
 
     /* ─── Constructor ──────────────────────────────────────────── */
 
@@ -121,7 +122,8 @@ contract PayRouter is IPayRouter {
         Invoice calldata invoice,
         address tokenIn,
         uint256 amountIn,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) external override nonReentrant {
         if (amountIn == 0) revert ZeroAmount();
         _validateInvoice(invoice);
@@ -133,7 +135,7 @@ contract PayRouter is IPayRouter {
         // Pull tokenIn from caller
         _safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
 
-        uint256 fee = _settleSingle(invoice, tokenIn, amountIn, swapData);
+        uint256 fee = _settleSingle(invoice, tokenIn, amountIn, swapData, refundTo);
 
         emit PaymentExecuted(
             invoice.ref,
@@ -157,26 +159,28 @@ contract PayRouter is IPayRouter {
     function settleFromBridge(
         Invoice calldata invoice,
         address tokenIn,
-        uint256 minAmountIn,
-        bytes calldata swapData
+        uint256 amountIn,
+        bytes calldata swapData,
+        address refundTo
     ) external override nonReentrant {
+        if (amountIn == 0) revert ZeroAmount();
         _validateInvoice(invoice);
 
         bytes32 invoiceId = _invoiceId(invoice);
         if (settled[invoiceId]) revert AlreadySettled();
         settled[invoiceId] = true;
 
-        // Tokens are already at this contract (sent by LI.FI bridge)
+        // Verify bridged tokens are available (sent by LI.FI before this call)
         uint256 balance = IERC20(tokenIn).balanceOf(address(this));
-        if (balance < minAmountIn) revert InsufficientInput();
+        if (balance < amountIn) revert InsufficientInput();
 
-        uint256 fee = _settleSingle(invoice, tokenIn, balance, swapData);
+        uint256 fee = _settleSingle(invoice, tokenIn, amountIn, swapData, refundTo);
 
         emit BridgeSettlement(
             invoice.ref,
             invoice.receiver,
             tokenIn,
-            balance,
+            amountIn,
             invoice.tokenOut,
             invoice.amountOut,
             block.timestamp
@@ -187,7 +191,7 @@ contract PayRouter is IPayRouter {
             invoice.receiver,
             msg.sender,
             tokenIn,
-            balance,
+            amountIn,
             invoice.tokenOut,
             invoice.amountOut,
             fee,
@@ -202,7 +206,8 @@ contract PayRouter is IPayRouter {
     /// @inheritdoc IPayRouter
     function settleNative(
         Invoice calldata invoice,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) external payable override nonReentrant {
         if (msg.value == 0) revert ZeroAmount();
         _validateInvoice(invoice);
@@ -215,7 +220,7 @@ contract PayRouter is IPayRouter {
         weth.deposit{value: msg.value}();
 
         address wethAddr = address(weth);
-        uint256 fee = _settleSingle(invoice, wethAddr, msg.value, swapData);
+        uint256 fee = _settleSingle(invoice, wethAddr, msg.value, swapData, refundTo);
 
         emit PaymentExecuted(
             invoice.ref,
@@ -239,17 +244,24 @@ contract PayRouter is IPayRouter {
         Invoice[] calldata invoices,
         address tokenIn,
         uint256 amountIn,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) external override nonReentrant {
         uint256 len = invoices.length;
         if (len == 0) revert BatchEmpty();
         if (amountIn == 0) revert ZeroAmount();
 
+        // Validate all invoices share the same tokenOut
+        address sharedTokenOut = invoices[0].tokenOut;
+        for (uint256 i = 1; i < len; ++i) {
+            if (invoices[i].tokenOut != sharedTokenOut) revert TokenOutMismatch();
+        }
+
         // Pull total tokenIn once
         _safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
 
-        // Check if swap is needed (assumes all invoices share same tokenOut)
-        bool needsSwap = tokenIn != invoices[0].tokenOut;
+        // Check if swap is needed
+        bool needsSwap = tokenIn != sharedTokenOut;
 
         if (needsSwap && swapData.length > 0) {
             IERC20(tokenIn).approve(address(universalRouter), amountIn);
@@ -260,48 +272,50 @@ contract PayRouter is IPayRouter {
 
         // Distribute to each receiver
         for (uint256 i; i < len; ++i) {
-            Invoice calldata inv = invoices[i];
-            _validateInvoice(inv);
+            _validateInvoice(invoices[i]);
 
-            bytes32 invoiceId = _invoiceId(inv);
-            if (settled[invoiceId]) revert AlreadySettled();
-            settled[invoiceId] = true;
-
-            address payToken = needsSwap ? inv.tokenOut : tokenIn;
-            uint256 payAmount = inv.amountOut;
-
-            // Apply fee
-            uint256 fee;
-            if (feeConfig.feeBps > 0 && feeConfig.feeRecipient != address(0)) {
-                fee = (payAmount * feeConfig.feeBps) / 10_000;
-                payAmount -= fee;
-                _safeTransfer(payToken, feeConfig.feeRecipient, fee);
+            {
+                bytes32 invoiceId = _invoiceId(invoices[i]);
+                if (settled[invoiceId]) revert AlreadySettled();
+                settled[invoiceId] = true;
             }
 
-            _safeTransfer(payToken, inv.receiver, payAmount);
+            {
+                address payToken = needsSwap ? invoices[i].tokenOut : tokenIn;
+                uint256 payAmount = invoices[i].amountOut;
+                uint256 fee;
 
-            emit PaymentExecuted(
-                inv.ref,
-                inv.receiver,
-                msg.sender,
-                tokenIn,
-                inv.amountOut,
-                inv.tokenOut,
-                payAmount,
-                fee,
-                block.timestamp
-            );
+                if (feeConfig.feeBps > 0 && feeConfig.feeRecipient != address(0)) {
+                    fee = (payAmount * feeConfig.feeBps) / 10_000;
+                    payAmount -= fee;
+                    _safeTransfer(payToken, feeConfig.feeRecipient, fee);
+                }
+
+                _safeTransfer(payToken, invoices[i].receiver, payAmount);
+
+                emit PaymentExecuted(
+                    invoices[i].ref,
+                    invoices[i].receiver,
+                    msg.sender,
+                    tokenIn,
+                    invoices[i].amountOut,
+                    invoices[i].tokenOut,
+                    payAmount,
+                    fee,
+                    block.timestamp
+                );
+            }
         }
 
-        // Refund any dust left
+        // Refund any dust left to refundTo
         uint256 dustIn = IERC20(tokenIn).balanceOf(address(this));
         if (dustIn > 0) {
-            _safeTransfer(tokenIn, msg.sender, dustIn);
+            _safeTransfer(tokenIn, refundTo, dustIn);
         }
         if (needsSwap) {
-            uint256 dustOut = IERC20(invoices[0].tokenOut).balanceOf(address(this));
+            uint256 dustOut = IERC20(sharedTokenOut).balanceOf(address(this));
             if (dustOut > 0) {
-                _safeTransfer(invoices[0].tokenOut, msg.sender, dustOut);
+                _safeTransfer(sharedTokenOut, refundTo, dustOut);
             }
         }
 
@@ -318,7 +332,8 @@ contract PayRouter is IPayRouter {
         Invoice calldata invoice,
         address tokenIn,
         uint256 amountIn,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) internal returns (uint256 fee) {
         if (tokenIn == invoice.tokenOut) {
             // ── Direct payment (no swap needed) ──────────────────
@@ -335,14 +350,14 @@ contract PayRouter is IPayRouter {
 
             _safeTransfer(invoice.tokenOut, invoice.receiver, payAmount);
 
-            // Refund dust to caller
+            // Refund dust to refundTo (not msg.sender — important for LI.FI flows)
             uint256 dust = amountIn - invoice.amountOut;
             if (dust > 0) {
-                _safeTransfer(tokenIn, msg.sender, dust);
+                _safeTransfer(tokenIn, refundTo, dust);
             }
         } else {
             // ── Swap via Uniswap V4, then pay ────────────────────
-            fee = _swapAndPay(tokenIn, amountIn, invoice, swapData);
+            fee = _swapAndPay(tokenIn, amountIn, invoice, swapData, refundTo);
         }
     }
 
@@ -399,7 +414,8 @@ contract PayRouter is IPayRouter {
         address tokenIn,
         uint256 amountIn,
         Invoice calldata invoice,
-        bytes calldata swapData
+        bytes calldata swapData,
+        address refundTo
     ) internal returns (uint256 fee) {
         // Approve Universal Router to spend tokenIn
         IERC20(tokenIn).approve(address(universalRouter), amountIn);
@@ -426,16 +442,16 @@ contract PayRouter is IPayRouter {
         // Pay merchant
         _safeTransfer(invoice.tokenOut, invoice.receiver, payAmount);
 
-        // Refund excess tokenOut to caller
+        // Refund excess tokenOut to refundTo
         uint256 excessOut = IERC20(invoice.tokenOut).balanceOf(address(this));
         if (excessOut > 0) {
-            _safeTransfer(invoice.tokenOut, msg.sender, excessOut);
+            _safeTransfer(invoice.tokenOut, refundTo, excessOut);
         }
 
-        // Refund remaining tokenIn to caller
+        // Refund remaining tokenIn to refundTo
         uint256 remainingIn = IERC20(tokenIn).balanceOf(address(this));
         if (remainingIn > 0) {
-            _safeTransfer(tokenIn, msg.sender, remainingIn);
+            _safeTransfer(tokenIn, refundTo, remainingIn);
         }
     }
 
