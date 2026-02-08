@@ -1,45 +1,45 @@
-# AbiPago — Arquitectura del Sistema (Final)
+# AbiPago — System Architecture (Final)
 
-> Documentación técnica con diagramas de arquitectura. Refleja el estado **final** del smart contract  
-> **PayRouter v2** desplegado y verificado en **Unichain mainnet** (chain 130).
+> Technical documentation with architecture diagrams. Reflects the **final** state of the smart contract
+> **PayRouter v2** deployed and verified on **Unichain mainnet** (chain 130).
 >
-> Contrato: [`0x91Bf4c06D2A588980450Bb6AEDc43f1923f149c2`](https://unichain.blockscout.com/address/0x91Bf4c06D2A588980450Bb6AEDc43f1923f149c2)
+> Contract: [`0x91Bf4c06D2A588980450Bb6AEDc43f1923f149c2`](https://unichain.blockscout.com/address/0x91Bf4c06D2A588980450Bb6AEDc43f1923f149c2)
 
 ---
 
-## 1. Vista General del Sistema
+## 1. System Overview
 
 ```mermaid
 graph TB
-    subgraph "📱 Mobile App · React Native / Expo"
-        HOME["🏠 Home Dashboard"]
-        PAY["📷 Pay · QR / NFC"]
-        RECEIVE["💰 Merchant Invoice"]
-        CONFIRM["✅ Confirm Payment"]
-        PROGRESS["⏳ Routing Progress"]
-        SUCCESS["🎉 Payment Success"]
+    subgraph "Mobile App - React Native / Expo"
+        HOME["Home Dashboard"]
+        PAY["Pay - QR / NFC"]
+        RECEIVE["Merchant Invoice"]
+        CONFIRM["Confirm Payment"]
+        PROGRESS["Routing Progress"]
+        SUCCESS["Payment Success"]
     end
 
-    subgraph "🌐 ENS · Ethereum Name Service"
+    subgraph "ENS - Ethereum Name Service"
         ENS_NAME["cafeteria.eth"]
-        ENS_RECORDS["Text Records<br/>• pay.receiver<br/>• pay.chainId<br/>• pay.token<br/>• pay.slippageBps<br/>• pay.memo<br/>• pay.router"]
+        ENS_RECORDS["Text Records<br/>pay.receiver<br/>pay.chainId<br/>pay.token<br/>pay.slippageBps<br/>pay.memo<br/>pay.router"]
     end
 
-    subgraph "🔗 LI.FI Composer"
+    subgraph "LI.FI Composer"
         LIFI_API["LI.FI API<br/>/v1/quote<br/>/v1/advanced/routes"]
         LIFI_EXEC["Cross-chain<br/>Swap + Bridge"]
     end
 
-    subgraph "⛓️ Unichain Mainnet · Chain 130"
-        PAYROUTER["📄 PayRouter v2<br/>0x91Bf…9c2"]
-        UNISWAP["🦄 Uniswap V4<br/>Universal Router<br/>0xEf74…af3"]
-        PERMIT2["🔐 Permit2<br/>0x0000…BA3"]
-        WETH["💎 WETH<br/>0x4200…0006"]
-        MERCHANT_WALLET["💼 Merchant Wallet"]
+    subgraph "Unichain Mainnet - Chain 130"
+        PAYROUTER["PayRouter v2<br/>0x91Bf...9c2"]
+        UNISWAP["Uniswap V4<br/>Universal Router<br/>0xEf74...af3"]
+        PERMIT2["Permit2<br/>0x0000...BA3"]
+        WETH["WETH<br/>0x4200...0006"]
+        MERCHANT_WALLET["Merchant Wallet"]
     end
 
-    subgraph "⛓️ Source Chain · Any EVM"
-        PAYER_WALLET["👛 Payer Wallet"]
+    subgraph "Source Chain - Any EVM"
+        PAYER_WALLET["Payer Wallet"]
     end
 
     PAY -->|"1. Scan QR / Tap NFC"| ENS_NAME
@@ -49,7 +49,7 @@ graph TB
     LIFI_API -->|"5. Best route"| CONFIRM
     CONFIRM -->|"6. User confirms"| PAYER_WALLET
     PAYER_WALLET -->|"7. Sign tx"| LIFI_EXEC
-    LIFI_EXEC -->|"8. Bridge → call<br/>settleFromBridge()"| PAYROUTER
+    LIFI_EXEC -->|"8. Bridge then call<br/>settleFromBridge"| PAYROUTER
     PAYROUTER -->|"9a. If swap needed"| PERMIT2
     PERMIT2 -->|"9b. Permit2 approve"| UNISWAP
     UNISWAP -->|"9c. V4_SWAP"| PAYROUTER
@@ -59,86 +59,86 @@ graph TB
 
 ---
 
-## 2. Flujo Completo de Pago (Secuencia)
+## 2. Full Payment Flow (Sequence)
 
 ```mermaid
 sequenceDiagram
-    actor Payer as 👤 Payer
-    participant App as 📱 AbiPago App
-    participant ENS as 🌐 ENS
-    participant LIFI as 🔗 LI.FI API
-    participant Wallet as 👛 WalletConnect
-    participant SrcChain as ⛓️ Source Chain
-    participant Bridge as 🌉 LI.FI Bridge
-    participant Router as 📄 PayRouter v2<br/>Unichain
-    participant P2 as 🔐 Permit2
-    participant Uni as 🦄 Uniswap V4
+    actor Payer as Payer
+    participant App as AbiPago App
+    participant ENS as ENS
+    participant LIFI as LI.FI API
+    participant Wallet as WalletConnect
+    participant SrcChain as Source Chain
+    participant Bridge as LI.FI Bridge
+    participant Router as PayRouter v2<br/>Unichain
+    participant P2 as Permit2
+    participant Uni as Uniswap V4
 
-    Note over Payer, App: 1️⃣ SCAN INVOICE
+    Note over Payer, App: 1 - SCAN INVOICE
     Payer->>App: Scan QR / Tap NFC tag
     App->>App: Parse: abipago://pay?ens=cafeteria.eth&amount=3.50&ref=coffee42
 
-    Note over App, ENS: 2️⃣ RESOLVE ENS PAYMENT PROFILE
-    App->>ENS: resolve("cafeteria.eth")
-    ENS-->>App: address: 0x84e5…3a19
-    App->>ENS: getText("pay.receiver")
-    ENS-->>App: 0x84e5…3a19
-    App->>ENS: getText("pay.chainId")
-    ENS-->>App: 130 (Unichain)
-    App->>ENS: getText("pay.token")
-    ENS-->>App: 0x078D…AD6 (USDC on Unichain)
-    App->>ENS: getText("pay.slippageBps")
-    ENS-->>App: 50 (0.5%)
-    App->>ENS: getText("pay.router")
-    ENS-->>App: 0x91Bf…9c2 (PayRouter)
+    Note over App, ENS: 2 - RESOLVE ENS PAYMENT PROFILE
+    App->>ENS: resolve cafeteria.eth
+    ENS-->>App: address: 0x84e5...3a19
+    App->>ENS: getText pay.receiver
+    ENS-->>App: 0x84e5...3a19
+    App->>ENS: getText pay.chainId
+    ENS-->>App: 130 Unichain
+    App->>ENS: getText pay.token
+    ENS-->>App: 0x078D...AD6 USDC on Unichain
+    App->>ENS: getText pay.slippageBps
+    ENS-->>App: 50 = 0.5 percent
+    App->>ENS: getText pay.router
+    ENS-->>App: 0x91Bf...9c2 PayRouter
 
-    Note over App, LIFI: 3️⃣ ROUTE CALCULATION
+    Note over App, LIFI: 3 - ROUTE CALCULATION
     App->>LIFI: POST /v1/advanced/routes
-    Note right of App: fromChain: user's chain<br/>toChain: 130 (Unichain)<br/>toToken: USDC<br/>toAddress: PayRouter<br/>contractCall: settleFromBridge()
+    Note right of App: fromChain: user chain<br/>toChain: 130 Unichain<br/>toToken: USDC<br/>toAddress: PayRouter<br/>contractCall: settleFromBridge
     LIFI-->>App: Best route with bridge + swap
 
-    Note over App, Payer: 4️⃣ CONFIRM PAYMENT
+    Note over App, Payer: 4 - CONFIRM PAYMENT
     App->>Payer: Show merchant, amount, route, fees
-    Payer->>App: Tap "Confirm & Pay"
+    Payer->>App: Tap Confirm and Pay
 
-    Note over App, SrcChain: 5️⃣ EXECUTE TRANSACTION
+    Note over App, SrcChain: 5 - EXECUTE TRANSACTION
     App->>Wallet: Request signature
     Wallet->>Payer: Approve tx
-    Payer->>Wallet: ✅ Approve
-    Wallet->>SrcChain: Submit tx (swap + bridge initiation)
+    Payer->>Wallet: Approve
+    Wallet->>SrcChain: Submit tx swap + bridge initiation
 
-    Note over SrcChain, Router: 6️⃣ CROSS-CHAIN BRIDGE
+    Note over SrcChain, Router: 6 - CROSS-CHAIN BRIDGE
     SrcChain->>Bridge: Lock/burn tokens on source
     Bridge->>Router: Transfer tokens to PayRouter on Unichain
-    Bridge->>Router: Call settleFromBridge()
+    Bridge->>Router: Call settleFromBridge
 
-    Note over Router, Uni: 7️⃣ SETTLEMENT ON UNICHAIN
-    alt tokenIn == tokenOut (e.g. USDC → USDC)
+    Note over Router, Uni: 7 - SETTLEMENT ON UNICHAIN
+    alt tokenIn == tokenOut e.g. USDC to USDC
         Router->>Router: Direct transfer to merchant
-    else tokenIn != tokenOut (e.g. WETH → USDC)
-        Router->>P2: ERC20 approve Permit2 (if needed)
-        Router->>P2: Permit2.approve(UR, amount, expiry)
-        Router->>Uni: universalRouter.execute(V4_SWAP)
+    else tokenIn != tokenOut e.g. WETH to USDC
+        Router->>P2: ERC20 approve Permit2 if needed
+        Router->>P2: Permit2.approve UR, amount, expiry
+        Router->>Uni: universalRouter.execute V4_SWAP
         Uni-->>Router: USDC received
         Router->>Router: Verify balance >= amountOut
     end
 
-    Note over Router: Protocol fee (if configured)
+    Note over Router: Protocol fee if configured
     Router->>Router: fee = amountOut * feeBps / 10000
     Router->>Router: transfer fee to feeRecipient
 
-    Router->>Router: transfer (amountOut - fee) to merchant
+    Router->>Router: transfer amountOut minus fee to merchant
     Router->>Router: refund dust to refundTo
 
-    Note over Router, App: 8️⃣ EVENTS & CONFIRMATION
-    Router->>Router: emit PaymentExecuted(ref, receiver, payer, ...)
-    Router->>Router: emit BridgeSettlement(ref, receiver, ...)
-    App->>Payer: 🎉 Payment Success + tx hash
+    Note over Router, App: 8 - EVENTS AND CONFIRMATION
+    Router->>Router: emit PaymentExecuted ref, receiver, payer
+    Router->>Router: emit BridgeSettlement ref, receiver
+    App->>Payer: Payment Success + tx hash
 ```
 
 ---
 
-## 3. PayRouter v2 — Arquitectura del Smart Contract (Final)
+## 3. PayRouter v2 — Smart Contract Architecture (Final)
 
 ```mermaid
 classDiagram
@@ -168,29 +168,29 @@ classDiagram
 
     class PayRouter {
         +uint16 MAX_FEE_BPS = 100
-        +address NATIVE_ETH = 0xEeee…eeEE
+        +address NATIVE_ETH = 0xEeee...eeEE
         +address owner
         +IUniversalRouter universalRouter
         +IWETH9 weth
         +IAllowanceTransfer PERMIT2
         +FeeConfig feeConfig
-        +mapping~bytes32→bool~ settled
+        +mapping settled
         -uint256 _locked
         +settle(invoice, tokenIn, amountIn, swapData, refundTo)
         +settleFromBridge(invoice, tokenIn, amountIn, swapData, refundTo)
         +settleNative(invoice, swapData, refundTo) payable
         +settleBatch(invoices, tokenIn, amountIn, swapData, refundTo)
-        +computeInvoiceId(invoice) → bytes32
-        +isSettled(invoice) → bool
+        +computeInvoiceId(invoice) bytes32
+        +isSettled(invoice) bool
         +setFeeConfig(feeRecipient, feeBps) onlyOwner
         +setUniversalRouter(router) onlyOwner
         +transferOwnership(newOwner) onlyOwner
         +rescue(token, to, amount) onlyOwner
         +rescueNative(to, amount) onlyOwner
-        -_settleSingle(invoice, tokenIn, amountIn, swapData, refundTo) → fee
-        -_swapAndPay(tokenIn, amountIn, invoice, swapData, refundTo) → fee
+        -_settleSingle(invoice, tokenIn, amountIn, swapData, refundTo) fee
+        -_swapAndPay(tokenIn, amountIn, invoice, swapData, refundTo) fee
         -_validateInvoice(invoice)
-        -_invoiceId(invoice) → bytes32 ~assembly~
+        -_invoiceId(invoice) bytes32 assembly
         -_approvePermit2(token, amount)
         -_safeTransfer(token, to, amount)
         -_safeTransferFrom(token, from, to, amount)
@@ -198,7 +198,7 @@ classDiagram
     }
 
     class IUniversalRouter {
-        <<interface · Uniswap V4>>
+        <<interface - Uniswap V4>>
         +execute(commands, inputs, deadline) payable
     }
 
@@ -209,18 +209,18 @@ classDiagram
     }
 
     class IAllowanceTransfer {
-        <<interface · Permit2>>
+        <<interface - Permit2>>
         +approve(token, spender, amount, expiration)
         +transferFrom(from, to, amount, token)
     }
 
     class IERC20 {
-        <<interface · OpenZeppelin>>
-        +transfer(to, amount) → bool
-        +transferFrom(from, to, amount) → bool
-        +approve(spender, amount) → bool
-        +balanceOf(account) → uint256
-        +allowance(owner, spender) → uint256
+        <<interface - OpenZeppelin>>
+        +transfer(to, amount) bool
+        +transferFrom(from, to, amount) bool
+        +approve(spender, amount) bool
+        +balanceOf(account) uint256
+        +allowance(owner, spender) uint256
     }
 
     IPayRouter <|.. PayRouter : implements
@@ -234,32 +234,32 @@ classDiagram
 
 ---
 
-## 4. Los 4 Modos de Settlement
+## 4. The 4 Settlement Modes
 
 ```mermaid
 flowchart LR
-    subgraph "MODE A · settle❨❩"
-        A1["User has tokens\nin wallet"] --> A2["approve() PayRouter"]
-        A2 --> A3["PayRouter.settle()"]
-        A3 --> A4["transferFrom\n(user → router)"]
+    subgraph "MODE A - settle"
+        A1["User has tokens\nin wallet"] --> A2["approve PayRouter"]
+        A2 --> A3["PayRouter.settle"]
+        A3 --> A4["transferFrom\nuser to router"]
     end
 
-    subgraph "MODE B · settleFromBridge❨❩"
-        B1["LI.FI bridges tokens\nto PayRouter address"] --> B2["LI.FI contractCall:\nsettleFromBridge()"]
+    subgraph "MODE B - settleFromBridge"
+        B1["LI.FI bridges tokens\nto PayRouter address"] --> B2["LI.FI contractCall:\nsettleFromBridge"]
         B2 --> B3["Tokens already\nat contract"]
     end
 
-    subgraph "MODE C · settleNative❨❩"
-        C1["User sends ETH\nvia msg.value"] --> C2["settleNative{value}()"]
-        C2 --> C3["weth.deposit{value}()\nauto-wrap → WETH"]
+    subgraph "MODE C - settleNative"
+        C1["User sends ETH\nvia msg.value"] --> C2["settleNative with value"]
+        C2 --> C3["weth.deposit\nauto-wrap to WETH"]
     end
 
-    subgraph "MODE D · settleBatch❨❩"
-        D1["User provides tokens\nfor N invoices"] --> D2["settleBatch()"]
+    subgraph "MODE D - settleBatch"
+        D1["User provides tokens\nfor N invoices"] --> D2["settleBatch"]
         D2 --> D3["Single swap +\ndistribute to N merchants"]
     end
 
-    A4 --> CORE["_settleSingle()"]
+    A4 --> CORE["_settleSingle"]
     B3 --> CORE
     C3 --> CORE
     D3 --> CORE2["Loop per invoice:\nvalidate + settle"]
@@ -268,49 +268,49 @@ flowchart LR
     CORE2 --> DECIDE
 
     DECIDE -->|"Same token"| DIRECT["Direct transfer\nto merchant"]
-    DECIDE -->|"Different token"| SWAP["_swapAndPay()\nvia Uniswap V4"]
-    SWAP --> FEE["Deduct protocol fee\n(if configured)"]
+    DECIDE -->|"Different token"| SWAP["_swapAndPay\nvia Uniswap V4"]
+    SWAP --> FEE["Deduct protocol fee\nif configured"]
     DIRECT --> FEE
     FEE --> PAY["Transfer to merchant\n+ refund dust to refundTo"]
 ```
 
 ---
 
-## 5. Lógica Interna de `_settleSingle()` (Flowchart Final)
+## 5. Internal Logic of `_settleSingle` (Final Flowchart)
 
 ```mermaid
 flowchart TD
-    A["Entry: _settleSingle()"] --> B{tokenIn == tokenOut?}
+    A["Entry: _settleSingle"] --> B{tokenIn == tokenOut?}
 
-    B -->|"✅ Same token"| C{"amountIn >= amountOut?"}
-    C -->|"No"| ERR1["❌ InsufficientInput"]
+    B -->|"Same token"| C{"amountIn >= amountOut?"}
+    C -->|"No"| ERR1["InsufficientInput"]
     C -->|"Yes"| D{"feeConfig enabled?"}
-    D -->|"Yes"| D1["fee = amountOut × feeBps / 10000"]
-    D1 --> D2["transfer fee → feeRecipient"]
-    D2 --> E["transfer (amountOut − fee) → merchant"]
-    D -->|"No"| E2["transfer amountOut → merchant"]
-    E --> F["Refund dust = amountIn − amountOut → refundTo"]
+    D -->|"Yes"| D1["fee = amountOut x feeBps / 10000"]
+    D1 --> D2["transfer fee to feeRecipient"]
+    D2 --> E["transfer amountOut minus fee to merchant"]
+    D -->|"No"| E2["transfer amountOut to merchant"]
+    E --> F["Refund dust = amountIn minus amountOut to refundTo"]
     E2 --> F
 
-    B -->|"❌ Different token"| G["_swapAndPay()"]
-    G --> H["_approvePermit2(tokenIn, amountIn)"]
-    H --> H1["ERC20.approve(Permit2, MAX) if needed"]
-    H1 --> H2["Permit2.approve(UR, amount, expiry+30min)"]
+    B -->|"Different token"| G["_swapAndPay"]
+    G --> H["_approvePermit2 tokenIn, amountIn"]
+    H --> H1["ERC20.approve Permit2, MAX if needed"]
+    H1 --> H2["Permit2.approve UR, amount, expiry+30min"]
     H2 --> I{"swapData.length > 0?"}
-    I -->|"Yes"| J["Decode: (commands, inputs, deadline)"]
-    J --> K["universalRouter.execute(commands, inputs, deadline)"]
+    I -->|"Yes"| J["Decode: commands, inputs, deadline"]
+    J --> K["universalRouter.execute commands, inputs, deadline"]
     I -->|"No"| L["Skip swap"]
-    K --> M{"balanceOf(tokenOut) >= amountOut?"}
+    K --> M{"balanceOf tokenOut >= amountOut?"}
     L --> M
-    M -->|"No"| ERR2["❌ SwapOutputInsufficient"]
+    M -->|"No"| ERR2["SwapOutputInsufficient"]
     M -->|"Yes"| N{"feeConfig enabled?"}
-    N -->|"Yes"| N1["fee = amountOut × feeBps / 10000"]
-    N1 --> N2["transfer fee → feeRecipient"]
-    N2 --> O["transfer (amountOut − fee) → merchant"]
-    N -->|"No"| O2["transfer amountOut → merchant"]
-    O --> P["refund excess tokenOut → refundTo"]
+    N -->|"Yes"| N1["fee = amountOut x feeBps / 10000"]
+    N1 --> N2["transfer fee to feeRecipient"]
+    N2 --> O["transfer amountOut minus fee to merchant"]
+    N -->|"No"| O2["transfer amountOut to merchant"]
+    O --> P["refund excess tokenOut to refundTo"]
     O2 --> P
-    P --> Q["refund remaining tokenIn → refundTo"]
+    P --> Q["refund remaining tokenIn to refundTo"]
 
     F --> R["return fee"]
     Q --> R
@@ -327,52 +327,52 @@ flowchart TD
 
 ```mermaid
 sequenceDiagram
-    participant PR as 📄 PayRouter
-    participant ERC20 as 💰 tokenIn (ERC20)
-    participant P2 as 🔐 Permit2
-    participant UR as 🦄 Universal Router
+    participant PR as PayRouter
+    participant ERC20 as tokenIn ERC20
+    participant P2 as Permit2
+    participant UR as Universal Router
 
-    Note over PR: _approvePermit2(tokenIn, amountIn)
+    Note over PR: _approvePermit2 tokenIn, amountIn
 
-    PR->>ERC20: allowance(PayRouter, Permit2) < amountIn?
+    PR->>ERC20: allowance PayRouter, Permit2 less than amountIn?
     alt First time: needs ERC20 approval
-        PR->>ERC20: approve(Permit2, type(uint256).max)
+        PR->>ERC20: approve Permit2, type uint256 max
     end
-    PR->>P2: approve(tokenIn, UR, amount, now+1800)
+    PR->>P2: approve tokenIn, UR, amount, now+1800
 
-    Note over PR: universalRouter.execute(V4_SWAP)
-    PR->>UR: execute(commands, inputs, deadline)
-    UR->>P2: transferFrom(PayRouter, UR, amount, tokenIn)
-    P2->>ERC20: transferFrom(PayRouter, UR, amount)
+    Note over PR: universalRouter.execute V4_SWAP
+    PR->>UR: execute commands, inputs, deadline
+    UR->>P2: transferFrom PayRouter, UR, amount, tokenIn
+    P2->>ERC20: transferFrom PayRouter, UR, amount
     UR->>UR: V4_SWAP: SWAP_EXACT_IN_SINGLE
     UR->>PR: tokenOut transferred to PayRouter
 ```
 
 ---
 
-## 7. ENS como "Payment Profile" (Capa de Configuración)
+## 7. ENS as Payment Profile (Configuration Layer)
 
 ```mermaid
 graph LR
-    subgraph "ENS Text Records de cafeteria.eth"
-        R1["pay.receiver = 0x84e5…3a19"]
+    subgraph "ENS Text Records for cafeteria.eth"
+        R1["pay.receiver = 0x84e5...3a19"]
         R2["pay.chainId = 130"]
-        R3["pay.token = 0x078D…AD6 ·USDC·"]
+        R3["pay.token = 0x078D...AD6 USDC"]
         R4["pay.slippageBps = 50"]
-        R5["pay.memo = Cafetería SCZ"]
+        R5["pay.memo = Cafeteria SCZ"]
         R6["pay.expirySec = 600"]
-        R7["pay.router = 0x91Bf…9c2"]
+        R7["pay.router = 0x91Bf...9c2"]
     end
 
-    APP["📱 AbiPago App"]
-    APP -->|"ethers.getResolver(name)"| RESOLVER["ENS Resolver"]
-    RESOLVER -->|"getText('pay.receiver')"| R1
-    RESOLVER -->|"getText('pay.chainId')"| R2
-    RESOLVER -->|"getText('pay.token')"| R3
-    RESOLVER -->|"getText('pay.slippageBps')"| R4
-    RESOLVER -->|"getText('pay.memo')"| R5
-    RESOLVER -->|"getText('pay.expirySec')"| R6
-    RESOLVER -->|"getText('pay.router')"| R7
+    APP["AbiPago App"]
+    APP -->|"ethers.getResolver name"| RESOLVER["ENS Resolver"]
+    RESOLVER -->|"getText pay.receiver"| R1
+    RESOLVER -->|"getText pay.chainId"| R2
+    RESOLVER -->|"getText pay.token"| R3
+    RESOLVER -->|"getText pay.slippageBps"| R4
+    RESOLVER -->|"getText pay.memo"| R5
+    RESOLVER -->|"getText pay.expirySec"| R6
+    RESOLVER -->|"getText pay.router"| R7
 
     R1 --> PROFILE["PaymentProfile"]
     R2 --> PROFILE
@@ -388,28 +388,28 @@ graph LR
 
 ---
 
-## 8. Integración LI.FI Composer + settleFromBridge()
+## 8. LI.FI Composer + settleFromBridge Integration
 
 ```mermaid
 sequenceDiagram
-    participant App as 📱 App
-    participant LIFI_API as 🔗 LI.FI API
-    participant SrcChain as ⛓️ Source Chain
-    participant LIFI_Bridge as 🌉 LI.FI Bridge
-    participant PayRouter as 📄 PayRouter<br/>Unichain
+    participant App as App
+    participant LIFI_API as LI.FI API
+    participant SrcChain as Source Chain
+    participant LIFI_Bridge as LI.FI Bridge
+    participant PayRouter as PayRouter<br/>Unichain
 
     Note over App: User confirmed payment
 
     App->>LIFI_API: POST /v1/advanced/routes
-    Note right of App: {<br/>"fromChainId": userChain,<br/>"toChainId": 130,<br/>"fromTokenAddress": userToken,<br/>"toTokenAddress": merchantToken,<br/>"fromAmount": amount,<br/>"toAddress": "0x91Bf…9c2",<br/>"contractCalls": [{<br/>  "toContractAddress": "0x91Bf…9c2",<br/>  "callData": settleFromBridge(…),<br/>  "gasLimit": "300000"<br/>}]<br/>}
+    Note right of App: fromChainId: userChain<br/>toChainId: 130<br/>fromTokenAddress: userToken<br/>toTokenAddress: merchantToken<br/>fromAmount: amount<br/>toAddress: 0x91Bf...9c2<br/>contractCalls with settleFromBridge callData<br/>gasLimit: 300000
 
     LIFI_API-->>App: Route + tx to sign
 
     App->>SrcChain: Submit signed tx
     SrcChain->>LIFI_Bridge: Swap + bridge
     LIFI_Bridge->>PayRouter: 1. Transfer tokens to contract
-    LIFI_Bridge->>PayRouter: 2. Call settleFromBridge()
-    PayRouter->>PayRouter: Verify balance ≥ amountIn
+    LIFI_Bridge->>PayRouter: 2. Call settleFromBridge
+    PayRouter->>PayRouter: Verify balance >= amountIn
     PayRouter->>PayRouter: Swap via Uniswap V4 if needed
     PayRouter->>PayRouter: Deduct fee, pay merchant, refund dust
     PayRouter->>PayRouter: emit PaymentExecuted + BridgeSettlement
@@ -417,24 +417,24 @@ sequenceDiagram
 
 ---
 
-## 9. Flujo de Pantallas de la App
+## 9. App Screen Flow
 
 ```mermaid
 stateDiagram-v2
     [*] --> Home
 
     state "Tab Navigation" as Tabs {
-        Home --> Pay: Tap "Pay"
-        Home --> MerchantInvoice: Tap "Receive"
-        Home --> Activity: Tab "Activity"
-        Home --> Profile: Tab "Profile"
+        Home --> Pay: Tap Pay
+        Home --> MerchantInvoice: Tap Receive
+        Home --> Activity: Tab Activity
+        Home --> Profile: Tab Profile
     }
 
     Pay --> ConfirmPayment: QR scanned / NFC read
-    ConfirmPayment --> RoutingProgress: "Confirm & Pay"
-    ConfirmPayment --> Pay: "Cancel"
+    ConfirmPayment --> RoutingProgress: Confirm and Pay
+    ConfirmPayment --> Pay: Cancel
     RoutingProgress --> PaymentSuccess: All steps complete
-    PaymentSuccess --> Home: "Pay Again" / Close
+    PaymentSuccess --> Home: Pay Again / Close
 
     MerchantInvoice --> MerchantInvoice: Generate QR
     MerchantInvoice --> MerchantInvoice: Write NFC
@@ -446,9 +446,9 @@ stateDiagram-v2
     }
 
     state RoutingProgress {
-        Preparing --> SwappingBridging: ✅
-        SwappingBridging --> Settling: ✅
-        Settling --> Complete: ✅
+        Preparing --> SwappingBridging: done
+        SwappingBridging --> Settling: done
+        Settling --> Complete: done
     }
 ```
 
@@ -497,57 +497,57 @@ stateDiagram-v2
 
 | Function | Mutability | Mode | Description |
 |----------|------------|------|-------------|
-| `settle()` | external | A | User provides tokens via approve+transferFrom |
-| `settleFromBridge()` | external | B | LI.FI contractCall — tokens already at contract |
-| `settleNative()` | payable | C | Native ETH — auto-wraps to WETH via IWETH9 |
-| `settleBatch()` | external | D | Multiple invoices (same tokenOut), one tx |
-| `computeInvoiceId()` | pure | view | Off-chain: precompute invoice hash |
-| `isSettled()` | view | view | Check if invoice already settled |
-| `setFeeConfig()` | onlyOwner | admin | Set protocol fee (max 1%) |
-| `setUniversalRouter()` | onlyOwner | admin | Update Universal Router address |
-| `transferOwnership()` | onlyOwner | admin | Transfer contract ownership |
-| `rescue()` | onlyOwner | admin | Emergency rescue ERC20 tokens |
-| `rescueNative()` | onlyOwner | admin | Emergency rescue native ETH |
+| `settle` | external | A | User provides tokens via approve+transferFrom |
+| `settleFromBridge` | external | B | LI.FI contractCall — tokens already at contract |
+| `settleNative` | payable | C | Native ETH — auto-wraps to WETH via IWETH9 |
+| `settleBatch` | external | D | Multiple invoices (same tokenOut), one tx |
+| `computeInvoiceId` | pure | view | Off-chain: precompute invoice hash |
+| `isSettled` | view | view | Check if invoice already settled |
+| `setFeeConfig` | onlyOwner | admin | Set protocol fee (max 1%) |
+| `setUniversalRouter` | onlyOwner | admin | Update Universal Router address |
+| `transferOwnership` | onlyOwner | admin | Transfer contract ownership |
+| `rescue` | onlyOwner | admin | Emergency rescue ERC20 tokens |
+| `rescueNative` | onlyOwner | admin | Emergency rescue native ETH |
 
 ### Events
 
 | Event | Indexed Fields | Emitted When |
 |-------|---------------|--------------|
 | `PaymentExecuted` | ref, receiver, payer | Every settlement (all 4 modes) |
-| `BridgeSettlement` | ref, receiver | `settleFromBridge()` only (additional to PaymentExecuted) |
-| `BatchSettled` | — | After `settleBatch()` completes |
-| `FeeConfigUpdated` | — | `setFeeConfig()` called |
-| `UniversalRouterUpdated` | newRouter | `setUniversalRouter()` called |
-| `OwnershipTransferred` | prevOwner, newOwner | Constructor + `transferOwnership()` |
+| `BridgeSettlement` | ref, receiver | settleFromBridge only (additional to PaymentExecuted) |
+| `BatchSettled` | — | After settleBatch completes |
+| `FeeConfigUpdated` | — | setFeeConfig called |
+| `UniversalRouterUpdated` | newRouter | setUniversalRouter called |
+| `OwnershipTransferred` | prevOwner, newOwner | Constructor + transferOwnership |
 
 ### Custom Errors
 
 | Error | Trigger |
 |-------|---------|
-| `InvoiceExpired()` | `deadline > 0 && block.timestamp > deadline` |
-| `AlreadySettled()` | Invoice hash already in `settled` mapping |
-| `InsufficientInput()` | `amountIn < amountOut` (direct payment, no swap) |
-| `SwapOutputInsufficient()` | Post-swap `balanceOf(tokenOut) < amountOut` |
-| `TransferFailed()` | ERC20 `transfer()` or `transferFrom()` returns false |
-| `ZeroAddress()` | receiver, tokenOut, or constructor param is address(0) |
-| `ZeroAmount()` | `amountIn == 0` or `amountOut == 0` |
-| `FeeTooHigh()` | `feeBps > MAX_FEE_BPS` (100 = 1%) |
-| `Reentrancy()` | Re-entry detected via `_locked` flag |
-| `BatchEmpty()` | `invoices.length == 0` |
-| `NativeTransferFailed()` | ETH transfer via `.call{value}` failed |
-| `TokenOutMismatch()` | Batch invoices have different `tokenOut` addresses |
+| `InvoiceExpired` | deadline > 0 and block.timestamp > deadline |
+| `AlreadySettled` | Invoice hash already in settled mapping |
+| `InsufficientInput` | amountIn < amountOut (direct payment, no swap) |
+| `SwapOutputInsufficient` | Post-swap balanceOf tokenOut < amountOut |
+| `TransferFailed` | ERC20 transfer or transferFrom returns false |
+| `ZeroAddress` | receiver, tokenOut, or constructor param is address zero |
+| `ZeroAmount` | amountIn == 0 or amountOut == 0 |
+| `FeeTooHigh` | feeBps > MAX_FEE_BPS (100 = 1%) |
+| `Reentrancy` | Re-entry detected via _locked flag |
+| `BatchEmpty` | invoices.length == 0 |
+| `NativeTransferFailed` | ETH transfer via .call with value failed |
+| `TokenOutMismatch` | Batch invoices have different tokenOut addresses |
 
 ### Security Features
 
 | Feature | Implementation |
 |---------|---------------|
-| **Reentrancy guard** | `_locked` flag (1 → 2 → 1) on all settlement functions |
-| **Replay protection** | `settled[invoiceId]` mapping — each invoice ID can only settle once |
-| **Invoice ID** | `keccak256` of all 6 fields, assembly-optimized (`calldatacopy`) |
-| **Permit2 expiry** | Short-lived: `block.timestamp + 1800` (30 minutes) |
-| **Fee cap** | Maximum 1% (100 bps) enforced in `setFeeConfig()` |
+| **Reentrancy guard** | _locked flag (1 → 2 → 1) on all settlement functions |
+| **Replay protection** | settled[invoiceId] mapping — each invoice ID can only settle once |
+| **Invoice ID** | keccak256 of all 6 fields, assembly-optimized (calldatacopy) |
+| **Permit2 expiry** | Short-lived: block.timestamp + 1800 (30 minutes) |
+| **Fee cap** | Maximum 1% (100 bps) enforced in setFeeConfig |
 | **Owner-only admin** | Fee config, router update, ownership, rescue functions |
-| **Dust refund** | All excess tokens returned to `refundTo` (not `msg.sender`) |
+| **Dust refund** | All excess tokens returned to refundTo (not msg.sender) |
 | **Input validation** | Zero checks on receiver, tokenOut, amountOut, constructor params |
 
 ### Test Suite (38 tests, 837 lines)
@@ -555,14 +555,14 @@ stateDiagram-v2
 | Category | Count | Tests |
 |----------|-------|-------|
 | Constructor | 7 | Owner, router, weth, permit2 set + zero-address reverts |
-| settle() | 4 | Direct payment, dust refund, swap via V4, protocol fee |
-| settleFromBridge() | 3 | Direct, insufficient balance revert, correct refundTo |
-| settleNative() | 2 | WETH direct payment, zero-value revert |
-| settleBatch() | 4 | Direct multi-pay, empty revert, fee distribution, tokenOut mismatch |
+| settle | 4 | Direct payment, dust refund, swap via V4, protocol fee |
+| settleFromBridge | 3 | Direct, insufficient balance revert, correct refundTo |
+| settleNative | 2 | WETH direct payment, zero-value revert |
+| settleBatch | 4 | Direct multi-pay, empty revert, fee distribution, tokenOut mismatch |
 | Validation | 6 | Already settled, expired, no-expiry, zero receiver/tokenOut/amount |
 | View functions | 2 | computeInvoiceId deterministic, isSettled |
 | Admin | 8 | setFeeConfig, disable fee, fee too high, setRouter, transferOwnership, rescue, rescueNative |
-| Edge cases | 2 | receive() ETH, ownership zero revert |
+| Edge cases | 2 | receive ETH, ownership zero revert |
 
 ### Unichain Token Addresses
 
@@ -577,7 +577,7 @@ stateDiagram-v2
 
 ---
 
-## 11. Stack Tecnológico (Final)
+## 11. Technology Stack (Final)
 
 ```mermaid
 mindmap
@@ -592,21 +592,21 @@ mindmap
       NFC: react-native-nfc-manager
       QR: expo-camera + qrcode-svg
     Smart Contracts
-      Solidity 0.8.24 · Cancun EVM
-      Foundry · forge build/test/script
-      PayRouter v2 · 526 lines
+      Solidity 0.8.24 Cancun EVM
+      Foundry forge build/test/script
+      PayRouter v2 526 lines
         4 settlement modes
         Permit2 approval flow
-        Protocol fee system · max 1%
+        Protocol fee system max 1 percent
         Reentrancy guard
         Assembly-optimized invoiceId
       Official Uniswap V4
-        Universal Router · V4_SWAP
-        Permit2 · IAllowanceTransfer
-        IWETH9 · native wrapping
-      OpenZeppelin · IERC20
-      Deployed: Unichain Mainnet · 130
-      38 tests · 837 lines
+        Universal Router V4_SWAP
+        Permit2 IAllowanceTransfer
+        IWETH9 native wrapping
+      OpenZeppelin IERC20
+      Deployed Unichain Mainnet 130
+      38 tests 837 lines
     ENS Layer
       Text Records
         pay.receiver
@@ -620,31 +620,31 @@ mindmap
     Cross-Chain
       LI.FI Composer
         /v1/advanced/routes
-        contractCalls → settleFromBridge()
+        contractCalls to settleFromBridge
       Bridge Protocols
     Target Chain
-      Unichain Mainnet · 130
-        Universal Router: 0xEf74…af3
-        WETH: 0x4200…0006
-        Permit2: 0x0000…BA3
-        PayRouter: 0x91Bf…9c2
+      Unichain Mainnet 130
+        Universal Router 0xEf74...af3
+        WETH 0x4200...0006
+        Permit2 0x0000...BA3
+        PayRouter 0x91Bf...9c2
 ```
 
 ---
 
-## 12. Modelo de Datos (Final)
+## 12. Data Model (Final)
 
 ```mermaid
 erDiagram
     ENS_NAME ||--o{ TEXT_RECORD : "has many"
     ENS_NAME {
         string name "cafeteria.eth"
-        address owner "0x84e5…"
+        address owner "0x84e5..."
         address resolver "ENS Public Resolver"
     }
     TEXT_RECORD {
         string key "pay.receiver etc."
-        string value "0x84e5… / 130 / token addr"
+        string value "0x84e5... or 130 or token addr"
     }
 
     INVOICE ||--|| PAYMENT : "settles into"
@@ -681,18 +681,18 @@ erDiagram
 
     FEE_CONFIG {
         address feeRecipient "Where fees go"
-        uint16 feeBps "Basis points · max 100"
+        uint16 feeBps "Basis points max 100"
     }
 
     PAYROUTER ||--|| FEE_CONFIG : "has"
     PAYROUTER ||--o{ PAYMENT : "emits"
     PAYROUTER ||--o{ BRIDGE_SETTLEMENT : "emits"
     PAYROUTER {
-        address contract "0x91Bf…9c2"
-        uint256 chainId "130 · Unichain"
+        address contract "0x91Bf...9c2"
+        uint256 chainId "130 Unichain"
         address owner "deployer"
-        address universalRouter "0xEf74…af3"
-        address weth "0x4200…0006"
-        address permit2 "0x0000…BA3"
+        address universalRouter "0xEf74...af3"
+        address weth "0x4200...0006"
+        address permit2 "0x0000...BA3"
     }
 ```
