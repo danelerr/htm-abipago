@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {PayRouter} from "../src/PayRouter.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IPayRouter} from "../src/interfaces/IPayRouter.sol";
 
 /**
  * @title PopulatePayRouter
@@ -38,7 +38,7 @@ contract PopulatePayRouter is Script {
 
         // ── TX 1: settleNative — pay 0.0001 ETH (WETH) ──────────
         {
-            PayRouter.Invoice memory inv = PayRouter.Invoice({
+            IPayRouter.Invoice memory inv = IPayRouter.Invoice({
                 receiver: merchant,
                 tokenOut: address(router.weth()),
                 amountOut: 0.0001 ether,
@@ -53,7 +53,7 @@ contract PopulatePayRouter is Script {
 
         // ── TX 2: settleNative — pay 0.0002 ETH (WETH) ──────────
         {
-            PayRouter.Invoice memory inv = PayRouter.Invoice({
+            IPayRouter.Invoice memory inv = IPayRouter.Invoice({
                 receiver: merchant,
                 tokenOut: address(router.weth()),
                 amountOut: 0.0002 ether,
@@ -68,7 +68,7 @@ contract PopulatePayRouter is Script {
 
         // ── TX 3: settleNative — pay 0.00015 ETH (WETH) ─────────
         {
-            PayRouter.Invoice memory inv = PayRouter.Invoice({
+            IPayRouter.Invoice memory inv = IPayRouter.Invoice({
                 receiver: merchant,
                 tokenOut: address(router.weth()),
                 amountOut: 0.00015 ether,

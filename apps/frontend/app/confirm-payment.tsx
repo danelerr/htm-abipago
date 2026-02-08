@@ -53,6 +53,20 @@ function safeChecksum(raw: string): string {
   try { return getAddress(raw); } catch { return raw; }
 }
 
+/** Normalise token address for the LI.FI API (zero address for native tokens) */
+function toLiFiToken(addr: string): string {
+  if (!addr) return '0x0000000000000000000000000000000000000000';
+  if (addr.toLowerCase() === NATIVE_ETH.toLowerCase()) return '0x0000000000000000000000000000000000000000';
+  if (addr === '0x0000000000000000000000000000000000000000') return addr;
+  return addr;
+}
+
+/** True when the address represents native ETH (sentinel or zero) */
+function isNativeToken(addr: string): boolean {
+  if (!addr) return false;
+  return addr.toLowerCase() === NATIVE_ETH.toLowerCase() || addr === '0x0000000000000000000000000000000000000000';
+}
+
 export default function ConfirmPaymentScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -197,22 +211,10 @@ export default function ConfirmPaymentScreen() {
           return;
         }
 
-        // Cross-chain: build settleFromBridge calldata for LI.FI contract call
+        // Cross-chain: compute the exact on-chain amount the merchant wants
         const toAmountRaw = onChainInvoice
           ? onChainInvoice.amountOut.toString()
           : parseUnits(payAmount, tokenOutDecimals).toString();
-
-        // Encode settleFromBridge calldata so LI.FI calls PayRouter atomically after bridge
-        let contractCallData: string | undefined;
-        if (onChainInvoice) {
-          contractCallData = encodeSettleFromBridge(
-            onChainInvoice,
-            tokenOutAddr as `0x${string}`,   // tokenIn on dest = tokenOut (same token)
-            onChainInvoice.amountOut,
-            '0x',                            // no swap needed
-            address as `0x${string}`,        // refundTo = payer
-          );
-        }
 
         // Wrap LI.FI fetch with abort signal via Promise.race
         const fetchWithTimeout = <T,>(promise: Promise<T>): Promise<T> =>
@@ -225,34 +227,64 @@ export default function ConfirmPaymentScreen() {
             }),
           ]);
 
-        // Use user-selected token as source (effectivePayTokenAddr)
+        // Normalise token addresses for LI.FI (use zero-address for native ETH)
+        const lifiFromToken = toLiFiToken(effectivePayTokenAddr);
+        const lifiToToken = toLiFiToken(tokenOutAddr);
+        const destIsNative = isNativeToken(tokenOutAddr);
+
         let quote: import('@/services/lifi').LiFiStep;
-        if (contractCallData) {
-          quote = await fetchWithTimeout(getQuoteContractCalls({
-            fromChain: payerChainId,
-            fromToken: effectivePayTokenAddr,
-            fromAddress: address,
-            toChain: destChainId,
-            toToken: tokenOutAddr,
-            toAmount: toAmountRaw,
-            toFallbackAddress: address, // safety: tokens go to payer if contract call fails
-            contractCalls: [{
-              fromAmount: toAmountRaw,
-              fromTokenAddress: tokenOutAddr,
-              toContractAddress: routerAddr,
-              toContractCallData: contractCallData,
-              toContractGasLimit: '400000',
-            }],
-            slippage: slippageBps / 10000,
-          }));
+
+        if (!destIsNative && onChainInvoice) {
+          // ── ERC-20 destination: use contractCalls so PayRouter settles atomically ──
+          const contractCallData = encodeSettleFromBridge(
+            onChainInvoice,
+            tokenOutAddr as `0x${string}`,   // tokenIn on dest = tokenOut (same token after bridge)
+            onChainInvoice.amountOut,
+            '0x',                            // no swap needed
+            address as `0x${string}`,        // refundTo = payer
+          );
+          try {
+            quote = await fetchWithTimeout(getQuoteContractCalls({
+              fromChain: payerChainId,
+              fromToken: lifiFromToken,
+              fromAddress: address,
+              toChain: destChainId,
+              toToken: lifiToToken,
+              toAmount: toAmountRaw,
+              toFallbackAddress: merchantReceiver || address,
+              contractCalls: [{
+                fromAmount: toAmountRaw,
+                fromTokenAddress: lifiToToken,
+                toContractAddress: routerAddr,
+                toContractCallData: contractCallData,
+                toContractGasLimit: '150000', // settleFromBridge is cheap for direct transfers
+              }],
+              slippage: slippageBps / 10000,
+            }));
+          } catch (ccErr: any) {
+            // Fallback: if contractCalls fails (deny list, unsupported bridge, etc.)
+            // use simple getQuoteToAmount delivering directly to merchant
+            console.warn('[confirm] contractCalls failed, falling back to toAmount:', ccErr?.message);
+            quote = await fetchWithTimeout(getQuoteToAmount({
+              fromChain: payerChainId,
+              toChain: destChainId,
+              fromToken: lifiFromToken,
+              toToken: lifiToToken,
+              fromAddress: address,
+              toAddress: merchantReceiver || address,
+              toAmount: toAmountRaw,
+              slippage: slippageBps / 10000,
+            }));
+          }
         } else {
+          // ── Native ETH destination OR no invoice: simple bridge to merchant ──
           quote = await fetchWithTimeout(getQuoteToAmount({
             fromChain: payerChainId,
             toChain: destChainId,
-            fromToken: effectivePayTokenAddr,
-            toToken: tokenOutAddr,
+            fromToken: lifiFromToken,
+            toToken: lifiToToken,
             fromAddress: address,
-            toAddress: address,
+            toAddress: merchantReceiver || address,
             toAmount: toAmountRaw,
             slippage: slippageBps / 10000,
           }));
@@ -363,7 +395,12 @@ export default function ConfirmPaymentScreen() {
         lifiTxTo: lifiQuote?.transactionRequest?.to ?? '',
         lifiTxData: lifiQuote?.transactionRequest?.data ?? '',
         lifiTxValue: lifiQuote?.transactionRequest?.value ?? '0',
+        lifiTxGasLimit: lifiQuote?.transactionRequest?.gasLimit ?? '',
         lifiTxChainId: lifiQuote?.transactionRequest?.chainId?.toString() ?? '',
+        // Approval address for ERC-20 source tokens
+        lifiApprovalAddress: lifiQuote?.estimate?.approvalAddress ?? '',
+        // The actual from-token address on source chain (for approval)
+        fromTokenAddress: lifiQuote?.action?.fromToken?.address ?? effectivePayTokenAddr,
         // Contract call for settleFromBridge
         contractCall: paymentPlan.lifiContractCall ?? '',
       },

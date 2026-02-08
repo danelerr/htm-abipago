@@ -33,6 +33,7 @@ import {
   PAY_ROUTER_ADDRESS,
   NATIVE_ETH,
   UNICHAIN_RPC,
+  ETH_MAINNET_RPC,
 } from '@/constants/contracts';
 
 /* ─── Chain map for multi-chain wallet clients ───────────────────── */
@@ -44,6 +45,17 @@ const CHAIN_MAP: Record<number, Chain> = {
   137: polygon,
   8453: base,
   42161: arbitrum,
+};
+
+/* ─── Multi-chain RPC endpoints ──────────────────────────────────── */
+
+const CHAIN_RPC: Record<number, string> = {
+  1: ETH_MAINNET_RPC,
+  10: 'https://mainnet.optimism.io',
+  130: UNICHAIN_RPC,
+  137: 'https://polygon-rpc.com',
+  8453: 'https://mainnet.base.org',
+  42161: 'https://arb1.arbitrum.io/rpc',
 };
 
 /* ─── ABIs (viem-style JSON) ─────────────────────────────────────── */
@@ -220,6 +232,25 @@ function getPublicClient(): PublicClient {
   return _publicClient;
 }
 
+/* ─── Multi-chain read-only clients ──────────────────────────────── */
+
+const _chainClients: Record<number, PublicClient> = {};
+
+/**
+ * Get (or create) a cached public client for any supported chain.
+ * Used for reading allowance / balance on the payer's source chain.
+ */
+export function getPublicClientForChain(chainId: number): PublicClient {
+  if (chainId === 130) return getPublicClient(); // reuse Unichain singleton
+  if (!_chainClients[chainId]) {
+    _chainClients[chainId] = createPublicClient({
+      chain: CHAIN_MAP[chainId] ?? unichain,
+      transport: http(CHAIN_RPC[chainId] ?? UNICHAIN_RPC),
+    }) as PublicClient;
+  }
+  return _chainClients[chainId];
+}
+
 /**
  * Check if an invoice has been settled on-chain.
  */
@@ -290,6 +321,59 @@ export async function approveToken(
     functionName: 'approve',
     args: [PAY_ROUTER_ADDRESS, amount],
   });
+}
+
+/* ─── Multi-chain ERC-20 helpers (for cross-chain approval) ──────── */
+
+/**
+ * Check ERC-20 allowance on any supported chain.
+ * Used before cross-chain payments to check if the LI.FI router is approved.
+ */
+export async function checkAllowanceOnChain(
+  chainId: number,
+  account: Address,
+  token: Address,
+  spender: Address,
+): Promise<bigint> {
+  const client = getPublicClientForChain(chainId);
+  return client.readContract({
+    address: token,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: [account, spender],
+  }) as Promise<bigint>;
+}
+
+/**
+ * Approve an ERC-20 token on any chain (via the user's wallet provider).
+ * Used to approve LI.FI's router contract before a cross-chain bridge tx.
+ */
+export async function approveTokenOnChain(
+  provider: any,
+  chainId: number,
+  account: Address,
+  token: Address,
+  spender: Address,
+  amount: bigint,
+): Promise<Hash> {
+  const wallet = getWalletClient(provider, chainId);
+  const chain = CHAIN_MAP[chainId] ?? null;
+  return wallet.writeContract({
+    account,
+    chain,
+    address: token,
+    abi: ERC20_ABI,
+    functionName: 'approve',
+    args: [spender, amount],
+  });
+}
+
+/**
+ * Wait for a transaction to be confirmed on any supported chain.
+ */
+export async function waitForTxOnChain(chainId: number, hash: Hash) {
+  const client = getPublicClientForChain(chainId);
+  return client.waitForTransactionReceipt({ hash, timeout: 60_000 });
 }
 
 export async function getTokenBalance(

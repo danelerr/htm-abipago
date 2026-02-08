@@ -34,9 +34,12 @@ import {
   checkAllowance,
   waitForTx,
   getWalletClient,
+  checkAllowanceOnChain,
+  approveTokenOnChain,
+  waitForTxOnChain,
   type OnChainInvoice,
 } from '@/services/payrouter';
-import { PAY_ROUTER_ADDRESS } from '@/constants/contracts';
+import { PAY_ROUTER_ADDRESS, NATIVE_ETH } from '@/constants/contracts';
 
 export default function RoutingProgressScreen() {
   const router = useRouter();
@@ -72,7 +75,11 @@ export default function RoutingProgressScreen() {
     lifiTxTo?: string;
     lifiTxData?: string;
     lifiTxValue?: string;
+    lifiTxGasLimit?: string;
     lifiTxChainId?: string;
+    // Approval
+    lifiApprovalAddress?: string;
+    fromTokenAddress?: string;
     // Contract call
     contractCall?: string;
   }>();
@@ -112,12 +119,19 @@ export default function RoutingProgressScreen() {
       ];
     }
     // cross-chain
-    return [
-      { id: 'preparing', title: 'Preparing route', subtitle: `Route found via ${params.routeLabel ?? 'LI.FI'}`, status: 'pending' },
+    const needsApproval = !!params.lifiApprovalAddress && !!params.fromTokenAddress
+      && params.fromTokenAddress !== '0x0000000000000000000000000000000000000000'
+      && params.fromTokenAddress?.toLowerCase() !== NATIVE_ETH.toLowerCase();
+    const steps: StepInfo[] = [];
+    if (needsApproval) {
+      steps.push({ id: 'approving', title: 'Approving token', subtitle: 'Requesting ERC-20 approval…', status: 'pending' });
+    }
+    steps.push(
+      { id: 'preparing', title: 'Sending bridge tx', subtitle: `Route via ${params.routeLabel ?? 'LI.FI'}`, status: 'pending' },
       { id: 'swapping', title: 'Swapping / Bridging', subtitle: `${params.fromChainName ?? ''} → ${params.toChainName ?? ''}`, status: 'pending' },
-      { id: 'settling', title: 'Settling on destination', subtitle: 'PayRouter settlement', status: 'pending' },
-      { id: 'completed', title: 'Payment sent', subtitle: 'Pending', status: 'pending' },
-    ];
+      { id: 'completed', title: 'Payment delivered', subtitle: 'Pending', status: 'pending' },
+    );
+    return steps;
   };
 
   const [steps, setSteps] = useState<StepInfo[]>(getInitialSteps);
@@ -184,34 +198,62 @@ export default function RoutingProgressScreen() {
           updateStep('completed', { status: 'completed', subtitle: 'Payment delivered' });
 
         } else {
-          // Cross-chain: sign LI.FI transaction via viem wallet client
-          updateStep('preparing', { status: 'in-progress', subtitle: 'Signing transaction…' });
+          // ── Cross-chain: optional ERC-20 approval + sign LI.FI bridge tx ──
 
           if (!params.lifiTxTo || !params.lifiTxData) {
             throw new Error('Missing LI.FI transaction data');
           }
 
-          // Use source chain for the wallet client (tx is signed on the payer's chain)
-          const sourceChainId = parseInt(params.lifiTxChainId ?? params.fromChainId ?? '42161', 10);
+          const sourceChainId = parseInt(params.lifiTxChainId ?? params.fromChainId ?? '8453', 10);
+          const fromTokenAddr = (params.fromTokenAddress ?? '') as `0x${string}`;
+          const approvalAddr = (params.lifiApprovalAddress ?? '') as `0x${string}`;
+          const amountIn = BigInt(params.amountIn ?? '0');
+
+          // Step A: Approve ERC-20 on source chain if needed
+          const isERC20 = fromTokenAddr
+            && fromTokenAddr !== '0x0000000000000000000000000000000000000000'
+            && fromTokenAddr.toLowerCase() !== NATIVE_ETH.toLowerCase();
+
+          if (isERC20 && approvalAddr) {
+            updateStep('approving', { status: 'in-progress', subtitle: 'Checking allowance…' });
+            try {
+              const currentAllowance = await checkAllowanceOnChain(
+                sourceChainId, account, fromTokenAddr, approvalAddr,
+              );
+              if (currentAllowance < amountIn) {
+                updateStep('approving', { subtitle: 'Approve in your wallet…' });
+                const approveHash = await approveTokenOnChain(
+                  walletProvider, sourceChainId, account, fromTokenAddr, approvalAddr, amountIn,
+                );
+                updateStep('approving', { subtitle: 'Confirming approval…', txHash: approveHash });
+                await waitForTxOnChain(sourceChainId, approveHash);
+              }
+              updateStep('approving', { status: 'completed', subtitle: 'Token approved' });
+            } catch (approveErr: any) {
+              throw new Error(`Approval failed: ${approveErr?.shortMessage ?? approveErr?.message ?? approveErr}`);
+            }
+          }
+
+          // Step B: Send the LI.FI bridge transaction
+          updateStep('preparing', { status: 'in-progress', subtitle: 'Sign bridge tx in wallet…' });
+
           const wallet = getWalletClient(walletProvider, sourceChainId);
           const txHash = await wallet.sendTransaction({
             account,
             to: params.lifiTxTo as `0x${string}`,
             data: params.lifiTxData as `0x${string}`,
             value: BigInt(params.lifiTxValue ?? '0'),
-            chain: null, // let the wallet handle chain (EIP-1193)
+            ...(params.lifiTxGasLimit ? { gas: BigInt(params.lifiTxGasLimit) } : {}),
+            chain: null, // let wallet handle chain switching via EIP-1193
           });
           setSourceTxHash(txHash);
-          updateStep('preparing', { status: 'completed', subtitle: 'Transaction sent' });
+          updateStep('preparing', { status: 'completed', subtitle: 'Transaction sent', txHash });
+
+          // Step C: Poll LI.FI bridge status
           updateStep('swapping', {
             status: 'in-progress',
-            subtitle: 'Bridging in progress…',
-            txHash,
+            subtitle: 'Waiting for bridge…',
           });
-
-          // Source tx sent — LI.FI status polling will track confirmation + bridge
-          // (waitForTx uses Unichain RPC, but source tx is on a different chain)
-          updateStep('swapping', { subtitle: 'Waiting for source confirmation…' });
 
           // Poll LI.FI status
           const fromChain = parseInt(params.fromChainId ?? '42161', 10);
@@ -233,11 +275,6 @@ export default function RoutingProgressScreen() {
                 const destHash = status.receiving?.txHash ?? txHash;
                 setDestTxHash(destHash);
                 updateStep('swapping', { status: 'completed', subtitle: 'Bridge complete' });
-                updateStep('settling', {
-                  status: 'completed',
-                  subtitle: 'Settlement confirmed',
-                  txHash: destHash,
-                });
                 updateStep('completed', { status: 'completed', subtitle: 'Payment delivered' });
               } else if (status.status === 'FAILED') {
                 throw new Error(status.substatusMessage || 'Bridge transfer failed');
@@ -254,7 +291,6 @@ export default function RoutingProgressScreen() {
           if (!bridgeDone) {
             // Timeout — mark as likely complete (LI.FI status API may lag)
             updateStep('swapping', { status: 'completed', subtitle: 'Bridge likely complete' });
-            updateStep('settling', { status: 'completed', subtitle: 'Check explorer' });
             updateStep('completed', { status: 'completed', subtitle: 'Payment likely delivered' });
           }
         }
