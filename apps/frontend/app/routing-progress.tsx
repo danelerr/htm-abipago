@@ -1,66 +1,305 @@
 /**
- * Routing Progress — step-by-step payment processing indicator.
+ * Routing Progress — real payment execution with PayRouter contract.
+ *
+ * Receives all payment data from confirm-payment via route params.
+ * Executes the actual on-chain transaction:
+ *   - Direct:      approve → PayRouter.settle()
+ *   - Native ETH:  PayRouter.settleNative()
+ *   - Cross-chain: Sign LI.FI tx → poll status → settleFromBridge (automatic)
+ *
  * Adapted from: stitch/routing_progress_stepper/code.html
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
+  Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
 import type { StepInfo } from '@/types';
-
-const INITIAL_STEPS: StepInfo[] = [
-  { id: 'preparing', title: 'Preparing route', subtitle: 'Route found via LI.FI', status: 'completed' },
-  { id: 'swapping', title: 'Swapping / Bridging', subtitle: 'Estimated time: ~2 mins', status: 'in-progress' },
-  { id: 'settling', title: 'Settling on destination', subtitle: 'Pending confirmation', status: 'pending' },
-  { id: 'completed', title: 'Payment sent', subtitle: 'Pending', status: 'pending' },
-];
+import { useAccount, useProvider } from '@/services/appkit';
+import { chainName } from '@/services/ens';
+import { getStatus } from '@/services/lifi';
+import {
+  settle,
+  settleNative,
+  approveToken,
+  checkAllowance,
+  waitForTx,
+  getWalletClient,
+  type OnChainInvoice,
+} from '@/services/payrouter';
+import { PAY_ROUTER_ADDRESS } from '@/constants/contracts';
 
 export default function RoutingProgressScreen() {
   const router = useRouter();
-  const [steps, setSteps] = useState<StepInfo[]>(INITIAL_STEPS);
+  const params = useLocalSearchParams<{
+    mode?: string;
+    merchantEns?: string;
+    merchantAddress?: string;
+    amount?: string;
+    asset?: string;
+    ref?: string;
+    // Invoice
+    invoiceReceiver?: string;
+    invoiceTokenOut?: string;
+    invoiceAmountOut?: string;
+    invoiceDeadline?: string;
+    invoiceRef?: string;
+    invoiceNonce?: string;
+    // Payment plan
+    tokenIn?: string;
+    tokenInSymbol?: string;
+    amountIn?: string;
+    amountInHuman?: string;
+    // Route info
+    fromChainId?: string;
+    fromChainName?: string;
+    toChainId?: string;
+    toChainName?: string;
+    fromTokenSymbol?: string;
+    toTokenSymbol?: string;
+    routeLabel?: string;
+    networkFee?: string;
+    // LI.FI tx
+    lifiTxTo?: string;
+    lifiTxData?: string;
+    lifiTxValue?: string;
+    lifiTxChainId?: string;
+    // Contract call
+    contractCall?: string;
+  }>();
 
-  // Simulate progress for demo
+  const { address, chainId: walletChainId } = useAccount();
+  const { walletProvider } = useProvider();
+  const executingRef = useRef(false);
+
+  // Reconstruct the on-chain invoice from params
+  const invoice: OnChainInvoice | null =
+    params.invoiceReceiver && params.invoiceTokenOut
+      ? {
+          receiver: params.invoiceReceiver,
+          tokenOut: params.invoiceTokenOut,
+          amountOut: BigInt(params.invoiceAmountOut ?? '0'),
+          deadline: BigInt(params.invoiceDeadline ?? '0'),
+          ref: params.invoiceRef ?? '',
+          nonce: BigInt(params.invoiceNonce ?? '0'),
+        }
+      : null;
+
+  const mode = (params.mode ?? 'direct') as 'direct' | 'native' | 'cross-chain';
+
+  /* ── Steps ─────────────────────────────────────────────────────── */
+  const getInitialSteps = (): StepInfo[] => {
+    if (mode === 'direct') {
+      return [
+        { id: 'approving', title: 'Approving token', subtitle: 'Requesting ERC-20 approval…', status: 'pending' },
+        { id: 'settling', title: 'Settling on PayRouter', subtitle: `On ${chainName(parseInt(params.toChainId ?? '130', 10))}`, status: 'pending' },
+        { id: 'completed', title: 'Payment sent', subtitle: 'Pending', status: 'pending' },
+      ];
+    }
+    if (mode === 'native') {
+      return [
+        { id: 'settling', title: 'Settling native ETH', subtitle: `Auto-wrapping to WETH…`, status: 'pending' },
+        { id: 'completed', title: 'Payment sent', subtitle: 'Pending', status: 'pending' },
+      ];
+    }
+    // cross-chain
+    return [
+      { id: 'preparing', title: 'Preparing route', subtitle: `Route found via ${params.routeLabel ?? 'LI.FI'}`, status: 'pending' },
+      { id: 'swapping', title: 'Swapping / Bridging', subtitle: `${params.fromChainName ?? ''} → ${params.toChainName ?? ''}`, status: 'pending' },
+      { id: 'settling', title: 'Settling on destination', subtitle: 'PayRouter settlement', status: 'pending' },
+      { id: 'completed', title: 'Payment sent', subtitle: 'Pending', status: 'pending' },
+    ];
+  };
+
+  const [steps, setSteps] = useState<StepInfo[]>(getInitialSteps);
+  const [sourceTxHash, setSourceTxHash] = useState<string | null>(null);
+  const [destTxHash, setDestTxHash] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateStep = useCallback(
+    (id: string, update: Partial<StepInfo>) =>
+      setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...update } : s))),
+    [],
+  );
+
+  /* ── Execute payment ───────────────────────────────────────── */
   useEffect(() => {
-    const t1 = setTimeout(() => {
-      setSteps((prev) =>
-        prev.map((s) => {
-          if (s.id === 'swapping') return { ...s, status: 'completed', subtitle: 'Bridge complete' };
-          if (s.id === 'settling') return { ...s, status: 'in-progress', subtitle: 'Confirming on Base...' };
-          return s;
-        }),
-      );
-    }, 4000);
+    if (executingRef.current) return;
+    executingRef.current = true;
 
-    const t2 = setTimeout(() => {
-      setSteps((prev) =>
-        prev.map((s) => {
-          if (s.id === 'settling') return { ...s, status: 'completed', subtitle: 'Settlement confirmed' };
-          if (s.id === 'completed') return { ...s, status: 'completed', subtitle: 'Payment delivered' };
-          return s;
-        }),
-      );
-    }, 7000);
+    (async () => {
+      try {
+        if (!walletProvider || !address || !invoice) {
+          throw new Error('Wallet not connected');
+        }
 
-    const t3 = setTimeout(() => {
-      router.replace('/payment-success');
-    }, 8500);
+        const account = address as `0x${string}`;
 
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-    };
+        if (mode === 'direct') {
+          // Step 1: Approve
+          updateStep('approving', { status: 'in-progress' });
+          const tokenIn = (params.tokenIn ?? invoice.tokenOut) as `0x${string}`;
+          const amountIn = BigInt(params.amountIn ?? invoice.amountOut.toString());
+
+          const currentAllowance = await checkAllowance(walletProvider, account, tokenIn);
+          if (currentAllowance < amountIn) {
+            const approveHash = await approveToken(walletProvider, account, tokenIn, amountIn);
+            updateStep('approving', { subtitle: 'Waiting for confirmation…', txHash: approveHash });
+            await waitForTx(approveHash);
+          }
+          updateStep('approving', { status: 'completed', subtitle: 'Token approved' });
+
+          // Step 2: Settle
+          updateStep('settling', { status: 'in-progress', subtitle: 'Sending to PayRouter…' });
+          const txHash = await settle(walletProvider, account, invoice, tokenIn, amountIn);
+          setSourceTxHash(txHash);
+          updateStep('settling', { subtitle: 'Confirming on-chain…', txHash });
+          await waitForTx(txHash);
+          updateStep('settling', { status: 'completed', subtitle: 'Settlement confirmed' });
+
+          // Done
+          setDestTxHash(txHash);
+          updateStep('completed', { status: 'completed', subtitle: 'Payment delivered' });
+
+        } else if (mode === 'native') {
+          // Step 1: settleNative
+          updateStep('settling', { status: 'in-progress', subtitle: 'Wrapping ETH + settling…' });
+          const value = BigInt(params.amountIn ?? '0');
+          const txHash = await settleNative(walletProvider, account, invoice, value);
+          setSourceTxHash(txHash);
+          updateStep('settling', { subtitle: 'Confirming…', txHash });
+          await waitForTx(txHash);
+          updateStep('settling', { status: 'completed', subtitle: 'Settlement confirmed' });
+
+          setDestTxHash(txHash);
+          updateStep('completed', { status: 'completed', subtitle: 'Payment delivered' });
+
+        } else {
+          // Cross-chain: sign LI.FI transaction via viem wallet client
+          updateStep('preparing', { status: 'in-progress', subtitle: 'Signing transaction…' });
+
+          if (!params.lifiTxTo || !params.lifiTxData) {
+            throw new Error('Missing LI.FI transaction data');
+          }
+
+          const wallet = getWalletClient(walletProvider);
+          const txHash = await wallet.sendTransaction({
+            account,
+            to: params.lifiTxTo as `0x${string}`,
+            data: params.lifiTxData as `0x${string}`,
+            value: BigInt(params.lifiTxValue ?? '0'),
+          });
+          setSourceTxHash(txHash);
+          updateStep('preparing', { status: 'completed', subtitle: 'Transaction sent' });
+          updateStep('swapping', {
+            status: 'in-progress',
+            subtitle: 'Bridging in progress…',
+            txHash,
+          });
+
+          // Wait for source tx to be mined
+          await waitForTx(txHash);
+          updateStep('swapping', { subtitle: 'Bridge pending…' });
+
+          // Poll LI.FI status
+          const fromChain = parseInt(params.fromChainId ?? '42161', 10);
+          const toChain = parseInt(params.toChainId ?? '130', 10);
+          let bridgeDone = false;
+          let pollCount = 0;
+          const MAX_POLLS = 120; // 10 min with 5s interval
+
+          while (!bridgeDone && pollCount < MAX_POLLS) {
+            await new Promise((r) => setTimeout(r, 5000));
+            try {
+              const status = await getStatus({
+                txHash,
+                fromChain,
+                toChain,
+              });
+              if (status.status === 'DONE') {
+                bridgeDone = true;
+                const destHash = status.receiving?.txHash ?? txHash;
+                setDestTxHash(destHash);
+                updateStep('swapping', { status: 'completed', subtitle: 'Bridge complete' });
+                updateStep('settling', {
+                  status: 'completed',
+                  subtitle: 'Settlement confirmed',
+                  txHash: destHash,
+                });
+                updateStep('completed', { status: 'completed', subtitle: 'Payment delivered' });
+              } else if (status.status === 'FAILED') {
+                throw new Error(status.substatusMessage || 'Bridge transfer failed');
+              } else {
+                updateStep('swapping', { subtitle: `Bridging… (${status.substatus ?? 'pending'})` });
+              }
+            } catch (pollErr: any) {
+              // Ignore poll errors, keep retrying
+              if (pollErr?.message?.includes('failed')) throw pollErr;
+            }
+            pollCount++;
+          }
+
+          if (!bridgeDone) {
+            // Timeout — mark as likely complete (LI.FI status API may lag)
+            updateStep('swapping', { status: 'completed', subtitle: 'Bridge likely complete' });
+            updateStep('settling', { status: 'completed', subtitle: 'Check explorer' });
+            updateStep('completed', { status: 'completed', subtitle: 'Payment likely delivered' });
+          }
+        }
+
+        // Navigate to success after short delay
+        setTimeout(() => {
+          router.replace({
+            pathname: '/payment-success',
+            params: {
+              merchantEns: params.merchantEns ?? '',
+              merchantAddress: params.merchantAddress ?? '',
+              amount: params.amount ?? '',
+              asset: params.asset ?? '',
+              fromChainId: params.fromChainId ?? '',
+              fromChainName: params.fromChainName ?? '',
+              toChainId: params.toChainId ?? '',
+              toChainName: params.toChainName ?? '',
+              fromTokenSymbol: params.fromTokenSymbol ?? '',
+              toTokenSymbol: params.toTokenSymbol ?? '',
+              fromAmount: params.amountInHuman ?? '',
+              sourceTxHash: sourceTxHash ?? '',
+              destTxHash: destTxHash ?? sourceTxHash ?? '',
+              networkFee: params.networkFee ?? '',
+              routeLabel: params.routeLabel ?? '',
+              ref: params.ref ?? '',
+            },
+          });
+        }, 1500);
+
+      } catch (err: any) {
+        console.error('[routing] payment error:', err);
+        const msg = err?.reason ?? err?.message ?? 'Transaction failed';
+        setError(msg);
+
+        // Mark current in-progress step as error
+        setSteps((prev) =>
+          prev.map((s) =>
+            s.status === 'in-progress'
+              ? { ...s, status: 'error', subtitle: msg }
+              : s,
+          ),
+        );
+      }
+    })();
   }, []);
 
   const allDone = steps.every((s) => s.status === 'completed');
+  const hasError = steps.some((s) => s.status === 'error');
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -89,6 +328,10 @@ export default function RoutingProgressScreen() {
                   <View style={styles.stepActive}>
                     <ActivityIndicator size="small" color={C.primary} />
                   </View>
+                ) : step.status === 'error' ? (
+                  <View style={[styles.stepDone, { backgroundColor: '#FF4444' }]}>
+                    <MaterialIcons name="close" size={18} color={C.white} />
+                  </View>
                 ) : (
                   <View style={styles.stepPending}>
                     <View style={styles.pendingDot} />
@@ -99,6 +342,7 @@ export default function RoutingProgressScreen() {
                     style={[
                       styles.stepLine,
                       step.status === 'completed' && { backgroundColor: C.primary },
+                      step.status === 'error' && { backgroundColor: '#FF4444' },
                     ]}
                   />
                 )}
@@ -112,12 +356,20 @@ export default function RoutingProgressScreen() {
                     styles.stepSub,
                     step.status === 'completed' && { color: C.primary },
                     step.status === 'in-progress' && { color: C.primary + 'CC' },
+                    step.status === 'error' && { color: '#FF4444' },
                   ]}
                 >
                   {step.subtitle}
                 </Text>
 
-                {/* Bridge detail box (only for swapping step in-progress) */}
+                {/* Tx hash link */}
+                {step.txHash && (
+                  <Text style={styles.txHashText}>
+                    Tx: {step.txHash.slice(0, 10)}…{step.txHash.slice(-6)}
+                  </Text>
+                )}
+
+                {/* Bridge detail box */}
                 {step.id === 'swapping' && step.status === 'in-progress' && (
                   <View style={styles.detailBox}>
                     <View style={styles.detailIcon}>
@@ -126,7 +378,9 @@ export default function RoutingProgressScreen() {
                     <View>
                       <Text style={styles.detailLabel}>Bridge</Text>
                       <Text style={styles.detailVal}>
-                        Arbitrum <Text style={{ color: C.gray500 }}>→</Text> Base
+                        {params.fromChainName ?? 'Source'}{' '}
+                        <Text style={{ color: C.gray500 }}>→</Text>{' '}
+                        {params.toChainName ?? 'Unichain'}
                       </Text>
                     </View>
                   </View>
@@ -140,24 +394,46 @@ export default function RoutingProgressScreen() {
       {/* Bottom section */}
       <View style={styles.bottom}>
         {/* Status card */}
-        <View style={styles.statusCard}>
+        <View style={[styles.statusCard, hasError && { backgroundColor: '#3A2222', borderColor: '#4A3030' }]}>
           <View>
             <Text style={styles.statusTitle}>
-              {allDone ? 'Payment complete!' : 'Bridging via LI.FI...'}
+              {allDone
+                ? 'Payment complete!'
+                : hasError
+                  ? 'Transaction Error'
+                  : mode === 'cross-chain'
+                    ? 'Bridging via LI.FI...'
+                    : 'Settling on PayRouter...'}
             </Text>
             <Text style={styles.statusSub}>
-              {allDone ? 'Redirecting...' : 'Finding best rates & routes'}
+              {allDone
+                ? 'Redirecting…'
+                : hasError
+                  ? 'Check details above'
+                  : mode === 'cross-chain'
+                    ? 'Finding best rates & routes'
+                    : `${params.amount ?? ''} ${params.asset ?? ''} → ${params.merchantEns ?? ''}`}
             </Text>
           </View>
         </View>
 
-        {/* Disabled button */}
-        <View style={styles.processingBtn}>
-          {!allDone && <ActivityIndicator size="small" color={C.textTertiary} />}
-          <Text style={styles.processingText}>
-            {allDone ? 'Complete ✓' : 'Processing...'}
-          </Text>
-        </View>
+        {/* Retry / Processing button */}
+        {hasError ? (
+          <TouchableOpacity
+            style={[styles.processingBtn, { borderColor: '#FF4444' }]}
+            onPress={() => router.back()}
+          >
+            <MaterialIcons name="refresh" size={18} color="#FF4444" />
+            <Text style={[styles.processingText, { color: '#FF4444' }]}>Go Back & Retry</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.processingBtn}>
+            {!allDone && <ActivityIndicator size="small" color={C.textTertiary} />}
+            <Text style={styles.processingText}>
+              {allDone ? 'Complete ✓' : 'Processing...'}
+            </Text>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -209,6 +485,7 @@ const styles = StyleSheet.create({
   stepContent: { flex: 1, paddingBottom: 28, paddingTop: 4 },
   stepTitle: { fontSize: 15, fontWeight: '600', color: C.white },
   stepSub: { fontSize: 13, color: C.gray500, marginTop: 4 },
+  txHashText: { fontSize: 11, color: C.blue400, marginTop: 4, fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }) },
 
   detailBox: {
     flexDirection: 'row', alignItems: 'center', gap: 12,

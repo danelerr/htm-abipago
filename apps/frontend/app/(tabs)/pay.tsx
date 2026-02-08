@@ -2,7 +2,7 @@
  * Pay — Scan QR code or Tap NFC to read a merchant invoice.
  * Adapted from: stitch/pay_-_scan_qr/nfc/code.html
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,10 +10,13 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
+import { CameraView, useCameraPermissions, BarcodeScanningResult } from 'expo-camera';
+import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
 import { C, S, R } from '@/constants/theme';
 import { getPaymentProfile, isEnsName } from '@/services/ens';
 import type { Invoice } from '@/types';
@@ -29,8 +32,10 @@ function parseAbipagoUri(raw: string): Invoice | null {
     const amount = url.searchParams.get('amount');
     const ref = url.searchParams.get('ref') ?? '';
     const assetHint = url.searchParams.get('asset') ?? undefined;
+    const chainIdStr = url.searchParams.get('chainId');
+    const chainId = chainIdStr ? parseInt(chainIdStr, 10) : undefined;
     if (!ens || !amount) return null;
-    return { ens, amount, ref, assetHint };
+    return { ens, amount, ref, assetHint, chainId };
   } catch {
     return null;
   }
@@ -40,8 +45,34 @@ export default function ScanPayScreen() {
   const router = useRouter();
   const [mode, setMode] = useState<ScanMode>('qr');
   const [resolving, setResolving] = useState(false);
+  const [torch, setTorch] = useState(false);
+  const hasScanned = useRef(false);          // debounce rapid scans
+  const [nfcReading, setNfcReading] = useState(false);
 
-  /** Handle decoded payload from QR or NFC */
+  /* ── Camera permissions ─────────────────────────────────────── */
+  const [permission, requestPermission] = useCameraPermissions();
+
+  /* ── NFC: start/stop reading when mode changes ──────────────── */
+  useEffect(() => {
+    if (mode !== 'nfc') return;
+    let cancelled = false;
+
+    (async () => {
+      const supported = await NfcManager.isSupported();
+      if (!supported) {
+        Alert.alert('NFC not supported', 'This device does not support NFC.');
+        return;
+      }
+      await NfcManager.start();
+    })();
+
+    return () => {
+      cancelled = true;
+      NfcManager.cancelTechnologyRequest().catch(() => {});
+    };
+  }, [mode]);
+
+  /* ── Handle decoded payload (QR or NFC) ─────────────────────── */
   const handlePayload = useCallback(
     async (data: string) => {
       // Try to parse as abipago:// URI
@@ -51,7 +82,8 @@ export default function ScanPayScreen() {
         setResolving(true);
         try {
           const profile = await getPaymentProfile(invoice.ens);
-          // Navigate with invoice + profile params
+          // QR chainId overrides ENS profile chainId
+          const destChainId = invoice.chainId ?? profile?.chainId;
           router.push({
             pathname: '/confirm-payment',
             params: {
@@ -59,9 +91,8 @@ export default function ScanPayScreen() {
               amount: invoice.amount,
               ref: invoice.ref,
               assetHint: invoice.assetHint ?? '',
-              // pass profile if resolved
               receiver: profile?.receiver ?? '',
-              destChainId: profile?.chainId?.toString() ?? '',
+              destChainId: destChainId?.toString() ?? '',
               destToken: profile?.token ?? '',
               slippageBps: profile?.slippageBps?.toString() ?? '',
               memo: profile?.memo ?? '',
@@ -72,19 +103,68 @@ export default function ScanPayScreen() {
           Alert.alert('Error', 'Failed to resolve ENS payment profile');
         } finally {
           setResolving(false);
+          // Allow scanning again after navigating back
+          setTimeout(() => { hasScanned.current = false; }, 2000);
         }
       } else {
-        // Fallback: navigate without profile
         router.push('/confirm-payment');
+        setTimeout(() => { hasScanned.current = false; }, 2000);
       }
     },
     [router],
   );
 
-  const handleScanComplete = () => {
-    // Simulate scanning an abipago URI
-    handlePayload('abipago://pay?ens=cafeteria.eth&amount=3.50&ref=coffee42&asset=USDC');
-  };
+  /* ── QR barcode scanned ─────────────────────────────────────── */
+  const onBarcodeScanned = useCallback(
+    (result: BarcodeScanningResult) => {
+      if (hasScanned.current || resolving) return;
+      hasScanned.current = true;
+      handlePayload(result.data);
+    },
+    [handlePayload, resolving],
+  );
+
+  /* ── NFC tap ────────────────────────────────────────────────── */
+  const startNfcRead = useCallback(async () => {
+    if (nfcReading) return;
+    setNfcReading(true);
+    try {
+      await NfcManager.requestTechnology(NfcTech.Ndef);
+      const tag = await NfcManager.getTag();
+      if (tag?.ndefMessage && tag.ndefMessage.length > 0) {
+        const record = tag.ndefMessage[0];
+        const text = Ndef.text.decodePayload(new Uint8Array(record.payload));
+        if (text) {
+          await handlePayload(text);
+        } else {
+          Alert.alert('NFC', 'Could not read NFC tag payload.');
+        }
+      } else {
+        Alert.alert('NFC', 'No NDEF data found on tag.');
+      }
+    } catch (e: any) {
+      if (e?.message !== 'cancelled') {
+        Alert.alert('NFC Error', e?.message ?? 'Failed to read NFC tag');
+      }
+    } finally {
+      NfcManager.cancelTechnologyRequest().catch(() => {});
+      setNfcReading(false);
+    }
+  }, [handlePayload, nfcReading]);
+
+  /* ── Permission not yet determined → show prompt ────────────── */
+  const renderPermissionGate = () => (
+    <View style={styles.permissionGate}>
+      <MaterialIcons name="camera-alt" size={56} color={C.gray500} />
+      <Text style={styles.permTitle}>Camera access needed</Text>
+      <Text style={styles.permSub}>
+        AbiPago uses the camera to scan merchant QR codes.
+      </Text>
+      <TouchableOpacity style={styles.permBtn} onPress={requestPermission}>
+        <Text style={styles.permBtnText}>Grant Camera Access</Text>
+      </TouchableOpacity>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -117,34 +197,68 @@ export default function ScanPayScreen() {
       <View style={styles.cameraArea}>
         {mode === 'qr' ? (
           <>
-            {/* QR Viewfinder */}
-            <View style={styles.viewfinder}>
-              {/* Corner markers */}
-              <View style={[styles.corner, styles.cornerTL]} />
-              <View style={[styles.corner, styles.cornerTR]} />
-              <View style={[styles.corner, styles.cornerBL]} />
-              <View style={[styles.corner, styles.cornerBR]} />
+            {/* Real camera or permission gate */}
+            {!permission?.granted ? (
+              renderPermissionGate()
+            ) : (
+              <CameraView
+                style={StyleSheet.absoluteFill}
+                facing="back"
+                enableTorch={torch}
+                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                onBarcodeScanned={onBarcodeScanned}
+              />
+            )}
 
-              {/* Scan line */}
-              <View style={styles.scanLine} />
+            {/* QR Viewfinder overlay (always on top of camera) */}
+            {permission?.granted && (
+              <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+                <View style={styles.viewfinderWrap}>
+                  <View style={styles.viewfinder}>
+                    {/* Corner markers */}
+                    <View style={[styles.corner, styles.cornerTL]} />
+                    <View style={[styles.corner, styles.cornerTR]} />
+                    <View style={[styles.corner, styles.cornerBL]} />
+                    <View style={[styles.corner, styles.cornerBR]} />
 
-              <View style={styles.helperPill}>
-                <Text style={styles.helperText}>Point at QR Code</Text>
+                    {/* Scan line */}
+                    <View style={styles.scanLine} />
+
+                    <View style={styles.helperPill}>
+                      <Text style={styles.helperText}>Point at QR Code</Text>
+                    </View>
+                  </View>
+                </View>
               </View>
-            </View>
+            )}
+
+            {/* Resolving overlay */}
+            {resolving && (
+              <View style={styles.resolvingOverlay}>
+                <ActivityIndicator size="large" color={C.primary} />
+                <Text style={styles.resolvingText}>Resolving merchant…</Text>
+              </View>
+            )}
 
             {/* Camera controls */}
-            <View style={styles.controls}>
-              <TouchableOpacity style={styles.controlBtn}>
-                <MaterialIcons name="image" size={24} color={C.white} />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.flashBtn} onPress={handleScanComplete}>
-                <MaterialIcons name="flash-on" size={32} color={C.black} />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.controlBtn}>
-                <MaterialIcons name="flip-camera-ios" size={24} color={C.white} />
-              </TouchableOpacity>
-            </View>
+            {permission?.granted && (
+              <View style={styles.controlsOverlay} pointerEvents="box-none">
+                <View style={styles.controls}>
+                  <View style={styles.controlBtn} />
+                  <TouchableOpacity
+                    style={[styles.flashBtn, torch && styles.flashBtnActive]}
+                    onPress={() => setTorch((t) => !t)}
+                  >
+                    <MaterialIcons
+                      name={torch ? 'flash-on' : 'flash-off'}
+                      size={32}
+                      color={torch ? C.black : C.white}
+                    />
+                  </TouchableOpacity>
+                  <View style={styles.controlBtn} />
+                </View>
+              </View>
+            )}
           </>
         ) : (
           /* NFC Tap mode */
@@ -152,19 +266,21 @@ export default function ScanPayScreen() {
             <View style={styles.nfcCircle}>
               <MaterialIcons name="contactless" size={64} color={C.primary} />
             </View>
-            <Text style={styles.nfcTitle}>Hold near NFC tag</Text>
+            <Text style={styles.nfcTitle}>
+              {nfcReading ? 'Listening…' : 'Hold near NFC tag'}
+            </Text>
             <Text style={styles.nfcSub}>
               Place your phone close to the merchant&apos;s NFC tag to read the invoice.
             </Text>
             <TouchableOpacity
-              style={[styles.nfcSimBtn, resolving && { opacity: 0.6 }]}
-              onPress={handleScanComplete}
-              disabled={resolving}
+              style={[styles.nfcSimBtn, (nfcReading || resolving) && { opacity: 0.6 }]}
+              onPress={startNfcRead}
+              disabled={nfcReading || resolving}
             >
-              {resolving ? (
+              {nfcReading || resolving ? (
                 <ActivityIndicator size="small" color={C.primaryDark} />
               ) : (
-                <Text style={styles.nfcSimText}>Simulate NFC Read</Text>
+                <Text style={styles.nfcSimText}>Start NFC Scan</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -228,11 +344,33 @@ const styles = StyleSheet.create({
     backgroundColor: C.black,
     overflow: 'hidden',
     position: 'relative',
+  },
+
+  /* Permission gate (shown when camera access not granted) */
+  permissionGate: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 32,
+  },
+  permTitle: { fontSize: 18, fontWeight: '700', color: C.white },
+  permSub: { fontSize: 13, color: C.gray400, textAlign: 'center', lineHeight: 20 },
+  permBtn: {
+    marginTop: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: R.full,
+    backgroundColor: C.primary,
+  },
+  permBtnText: { color: C.primaryDark, fontWeight: '700', fontSize: 14 },
+
+  /* Viewfinder overlay (sits on top of camera) */
+  viewfinderWrap: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-
-  /* Viewfinder */
   viewfinder: {
     width: '78%',
     aspectRatio: 1,
@@ -243,6 +381,26 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     alignItems: 'center',
     paddingBottom: 20,
+  },
+
+  /* Resolving overlay */
+  resolvingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+    zIndex: 10,
+  } as any,
+  resolvingText: { color: C.white, fontSize: 14, fontWeight: '600' },
+
+  /* Controls overlay (bottom of camera area) */
+  controlsOverlay: {
+    position: 'absolute',
+    bottom: 80,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
   },
   corner: {
     position: 'absolute',
@@ -313,9 +471,12 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: C.primary,
+    backgroundColor: 'rgba(0,0,0,0.5)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  flashBtnActive: {
+    backgroundColor: C.primary,
   },
 
   /* NFC */

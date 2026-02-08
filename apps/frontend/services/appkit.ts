@@ -12,7 +12,7 @@ import { EthersAdapter } from '@reown/appkit-ethers-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /* ─── Chain Definitions (viem canonical) ─────────────────────────── */
-import { base, arbitrum, mainnet, optimism, polygon } from 'viem/chains';
+import { base, arbitrum, mainnet, optimism, polygon, unichain } from 'viem/chains';
 
 /* ─── Storage adapter (wraps AsyncStorage → AppKit Storage) ──────── */
 const appKitStorage = {
@@ -25,8 +25,12 @@ const appKitStorage = {
     return pairs.map(([k, v]) => [k, v ? JSON.parse(v) : undefined] as [string, T]);
   },
   async getItem<T = any>(key: string) {
-    const raw = await AsyncStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : undefined;
+    try {
+      const raw = await AsyncStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : undefined;
+    } catch {
+      return undefined;
+    }
   },
   async setItem<T = any>(key: string, value: T) {
     await AsyncStorage.setItem(key, JSON.stringify(value));
@@ -35,6 +39,29 @@ const appKitStorage = {
     await AsyncStorage.removeItem(key);
   },
 };
+
+/**
+ * Wipe ALL WalletConnect / AppKit cached data.
+ * Call this when the user explicitly wants to "reset wallet".
+ */
+export async function resetWalletConnectStorage(): Promise<void> {
+  try {
+    const allKeys = await AsyncStorage.getAllKeys();
+    const wcKeys = (allKeys as string[]).filter(
+      (k) =>
+        k.startsWith('wc@') ||
+        k.startsWith('@walletconnect') ||
+        k.startsWith('W3M') ||
+        k.startsWith('appkit'),
+    );
+    if (wcKeys.length > 0) {
+      await AsyncStorage.multiRemove(wcKeys);
+      console.log('[appkit] cleared WC keys:', wcKeys.length);
+    }
+  } catch (e) {
+    console.warn('[appkit] failed to clear WC storage', e);
+  }
+}
 
 /* ─── Adapters ───────────────────────────────────────────────────── */
 const ethersAdapter = new EthersAdapter();
@@ -54,14 +81,14 @@ const metadata = {
 const PROJECT_ID = 'd5eedc7048c5cf81e76dc446bfbb0928';
 
 /* ─── Networks ───────────────────────────────────────────────────── */
-const networks = [base, arbitrum, mainnet, optimism, polygon];
+const networks = [unichain, base, arbitrum, mainnet, optimism, polygon];
 
 /* ─── Create singleton AppKit instance ───────────────────────────── */
 export const appKit = createAppKit({
   projectId: PROJECT_ID,
   metadata,
   networks,
-  defaultNetwork: base,
+  defaultNetwork: unichain,
   adapters: [ethersAdapter],
   storage: appKitStorage,
   features: {

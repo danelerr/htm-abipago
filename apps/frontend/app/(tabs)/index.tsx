@@ -51,6 +51,7 @@ export default function HomeDashboard() {
   const CHAIN_MAP: Record<number, string> = {
     1: 'Ethereum',
     10: 'Optimism',
+    130: 'Unichain',
     137: 'Polygon',
     8453: 'Base',
     42161: 'Arbitrum',

@@ -1,8 +1,9 @@
 /**
  * Confirm Payment — shows merchant, amount, route details, fees.
+ * Builds a real PayRouter on-chain invoice + LI.FI cross-chain route.
  * Adapted from: stitch/confirm_payment_details/code.html
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,6 +12,7 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -23,6 +25,20 @@ import SwipeButton from '@/components/ui/swipe-button';
 import { useAccount } from '@/services/appkit';
 import { chainName } from '@/services/ens';
 import { getQuoteToAmount, type LiFiStep } from '@/services/lifi';
+import {
+  PAY_ROUTER_ADDRESS,
+  PAY_ROUTER_CHAIN_ID,
+  getTokenDecimals,
+  getTokenAddress,
+  NATIVE_ETH,
+} from '@/constants/contracts';
+import {
+  buildInvoice,
+  buildPaymentPlan,
+  parseUnits,
+  type OnChainInvoice,
+  type PaymentPlan,
+} from '@/services/payrouter';
 
 export default function ConfirmPaymentScreen() {
   const router = useRouter();
@@ -37,42 +53,112 @@ export default function ConfirmPaymentScreen() {
     slippageBps?: string;
     memo?: string;
     routerAddr?: string;
+    token?: string;      // from QR: explicit token address
+    decimals?: string;    // from QR: token decimals
   }>();
-  const { address } = useAccount();
+  const { address, chainId: walletChainId } = useAccount();
 
   // Merge incoming params with mock fallbacks
   const merchantEns = params.ens ?? MOCK_INVOICE.ens;
   const payAmount = params.amount ?? MOCK_INVOICE.amount;
   const payRef = params.ref ?? MOCK_INVOICE.ref;
-  const destChainId = params.destChainId ? parseInt(params.destChainId, 10) : MOCK_ROUTE.toChainId;
+  const destChainId = params.destChainId ? parseInt(params.destChainId, 10) : PAY_ROUTER_CHAIN_ID;
   const destChainLabel = chainName(destChainId);
+  const tokenOutAddr = params.token ?? params.destToken ?? '';
+  const tokenOutDecimals = params.decimals ? parseInt(params.decimals, 10) : 6;
+  const merchantReceiver = params.receiver ?? '';
+  const routerAddr = params.routerAddr ?? PAY_ROUTER_ADDRESS;
+  const slippageBps = params.slippageBps ? parseInt(params.slippageBps, 10) : 50;
 
   // Route fetching state
   const [routeInfo, setRouteInfo] = useState<RouteInfo>(MOCK_ROUTE);
   const [lifiQuote, setLifiQuote] = useState<LiFiStep | null>(null);
   const [fetchingRoute, setFetchingRoute] = useState(false);
 
-  // Fetch a real LI.FI quote when wallet is connected and we have real params
+  // On-chain invoice + payment plan
+  const [onChainInvoice, setOnChainInvoice] = useState<OnChainInvoice | null>(null);
+  const [paymentPlan, setPaymentPlan] = useState<PaymentPlan | null>(null);
+
+  // Build the on-chain invoice when params are available
   useEffect(() => {
-    if (!address || !params.destToken || !params.destChainId) return;
+    if (!merchantReceiver || !tokenOutAddr || !payAmount) return;
+    const inv = buildInvoice({
+      receiver: merchantReceiver,
+      tokenOut: tokenOutAddr,
+      amountOutHuman: payAmount,
+      tokenDecimals: tokenOutDecimals,
+      deadlineSeconds: 600, // 10 min
+      ref: payRef,
+    });
+    setOnChainInvoice(inv);
+  }, [merchantReceiver, tokenOutAddr, payAmount, tokenOutDecimals, payRef]);
+
+  // Fetch a real LI.FI quote when wallet is connected
+  useEffect(() => {
+    if (!address || !tokenOutAddr || !destChainId) return;
     let cancelled = false;
     (async () => {
       setFetchingRoute(true);
       try {
-        // Payer's source chain — use Arbitrum ETH as default source
+        const payerChain = walletChainId ?? 42161; // default Arbitrum
+        const isSameChain = payerChain === destChainId;
+
+        // On same-chain with known token — show direct route
+        if (isSameChain) {
+          setRouteInfo({
+            fromChainName: chainName(destChainId),
+            fromChainId: destChainId,
+            toChainName: chainName(destChainId),
+            toChainId: destChainId,
+            fromToken: tokenOutAddr,
+            fromTokenSymbol: params.assetHint || 'USDC',
+            toToken: tokenOutAddr,
+            toTokenSymbol: params.assetHint || 'USDC',
+            fromAmount: payAmount,
+            toAmount: payAmount,
+            estimatedGasFee: '~$0.01',
+            estimatedTimeSeconds: 5,
+            routeLabel: 'PayRouter • Direct',
+          });
+
+          // Build direct payment plan
+          if (onChainInvoice) {
+            const amountInRaw = parseUnits(payAmount, tokenOutDecimals);
+            const plan = await buildPaymentPlan({
+              payerChainId: payerChain,
+              destChainId,
+              tokenInSymbol: params.assetHint || 'USDC',
+              tokenInAddress: tokenOutAddr,
+              amountInHuman: payAmount,
+              amountInRaw,
+              invoice: onChainInvoice,
+              payerAddress: address,
+            });
+            if (!cancelled) setPaymentPlan(plan);
+          }
+          if (!cancelled) setFetchingRoute(false);
+          return;
+        }
+
+        // Cross-chain: fetch LI.FI quote
         const quote = await getQuoteToAmount({
-          fromChain: 42161, // Arbitrum
-          toChain: parseInt(params.destChainId!, 10),
+          fromChain: payerChain,
+          toChain: destChainId,
           fromToken: '0x0000000000000000000000000000000000000000', // ETH
-          toToken: params.destToken!,
+          toToken: tokenOutAddr,
           fromAddress: address,
-          toAddress: params.receiver || address,
-          toAmount: (parseFloat(payAmount) * 1e6).toString(), // Assume 6-decimal stablecoin
-          slippage: params.slippageBps ? parseInt(params.slippageBps, 10) / 10000 : 0.005,
+          toAddress: routerAddr, // funds go to PayRouter for settleFromBridge
+          toAmount: parseUnits(payAmount, tokenOutDecimals).toString(),
+          slippage: slippageBps / 10000,
         });
         if (cancelled) return;
         setLifiQuote(quote);
-        // Map LI.FI response → RouteInfo for display
+
+        const fromTokenDec = quote.action.fromToken.decimals;
+        const fromAmountHuman = (
+          parseFloat(quote.estimate.fromAmount) / 10 ** fromTokenDec
+        ).toFixed(6);
+
         setRouteInfo({
           fromChainName: chainName(quote.action.fromChainId),
           fromChainId: quote.action.fromChainId,
@@ -82,29 +168,91 @@ export default function ConfirmPaymentScreen() {
           fromTokenSymbol: quote.action.fromToken.symbol,
           toToken: quote.action.toToken.address,
           toTokenSymbol: quote.action.toToken.symbol,
-          fromAmount: (
-            parseFloat(quote.estimate.fromAmount) /
-            10 ** quote.action.fromToken.decimals
-          ).toFixed(6),
+          fromAmount: fromAmountHuman,
           toAmount: payAmount,
           estimatedGasFee: quote.estimate.gasCosts?.[0]
             ? `~$${quote.estimate.gasCosts[0].amountUSD}`
-            : MOCK_ROUTE.estimatedGasFee,
+            : '~$0.12',
           estimatedTimeSeconds: quote.estimate.executionDuration ?? 120,
           routeLabel: `${quote.tool} • LI.FI`,
         });
-      } catch {
+
+        // Build cross-chain payment plan
+        if (onChainInvoice) {
+          const plan = await buildPaymentPlan({
+            payerChainId: payerChain,
+            destChainId,
+            tokenInSymbol: quote.action.fromToken.symbol,
+            tokenInAddress: quote.action.fromToken.address,
+            amountInHuman: fromAmountHuman,
+            amountInRaw: BigInt(quote.estimate.fromAmount),
+            invoice: onChainInvoice,
+            payerAddress: address,
+          });
+          if (!cancelled) setPaymentPlan(plan);
+        }
+      } catch (err) {
+        console.warn('[confirm] LI.FI quote failed:', err);
         // Keep mock route on error
       } finally {
         if (!cancelled) setFetchingRoute(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [address, params.destToken, params.destChainId, params.receiver, params.slippageBps, payAmount]);
+  }, [address, tokenOutAddr, destChainId, walletChainId, onChainInvoice, payAmount, payRef]);
 
-  const handleConfirm = () => {
-    router.push('/routing-progress');
-  };
+  const handleConfirm = useCallback(() => {
+    if (!paymentPlan || !onChainInvoice) {
+      Alert.alert('Not Ready', 'Waiting for route calculation. Try again.');
+      return;
+    }
+
+    // Navigate to routing-progress with all the data needed to execute
+    router.push({
+      pathname: '/routing-progress',
+      params: {
+        mode: paymentPlan.mode,
+        merchantEns,
+        merchantAddress: merchantReceiver,
+        amount: payAmount,
+        asset: params.assetHint || 'USDC',
+        ref: payRef,
+        // Invoice data
+        invoiceReceiver: onChainInvoice.receiver,
+        invoiceTokenOut: onChainInvoice.tokenOut,
+        invoiceAmountOut: onChainInvoice.amountOut.toString(),
+        invoiceDeadline: onChainInvoice.deadline.toString(),
+        invoiceRef: onChainInvoice.ref,
+        invoiceNonce: onChainInvoice.nonce.toString(),
+        // Payment plan
+        tokenIn: paymentPlan.tokenIn,
+        tokenInSymbol: paymentPlan.tokenInSymbol,
+        amountIn: paymentPlan.amountIn.toString(),
+        amountInHuman: paymentPlan.amountInHuman,
+        // Route info
+        fromChainId: routeInfo.fromChainId.toString(),
+        fromChainName: routeInfo.fromChainName,
+        toChainId: routeInfo.toChainId.toString(),
+        toChainName: routeInfo.toChainName,
+        fromTokenSymbol: routeInfo.fromTokenSymbol,
+        toTokenSymbol: routeInfo.toTokenSymbol,
+        routeLabel: routeInfo.routeLabel,
+        networkFee: routeInfo.estimatedGasFee,
+        // LI.FI tx
+        lifiTxTo: lifiQuote?.transactionRequest?.to ?? '',
+        lifiTxData: lifiQuote?.transactionRequest?.data ?? '',
+        lifiTxValue: lifiQuote?.transactionRequest?.value ?? '0',
+        lifiTxChainId: lifiQuote?.transactionRequest?.chainId?.toString() ?? '',
+        // Contract call for settleFromBridge
+        contractCall: paymentPlan.lifiContractCall ?? '',
+      },
+    });
+  }, [paymentPlan, onChainInvoice, lifiQuote, routeInfo, merchantEns, payAmount, payRef, merchantReceiver, params.assetHint]);
+
+  const totalDisplay = useMemo(() => {
+    if (!routeInfo) return payAmount;
+    return `${routeInfo.fromAmount} ${routeInfo.fromTokenSymbol}`;
+  }, [routeInfo, payAmount]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -234,13 +382,31 @@ export default function ConfirmPaymentScreen() {
         <GestureHandlerRootView>
           <SwipeButton
             label="Slide to Confirm"
-            subLabel="$3.62 Total"
+            subLabel={totalDisplay}
             onSwipeComplete={handleConfirm}
           />
         </GestureHandlerRootView>
         <TouchableOpacity onPress={() => router.back()}>
           <Text style={styles.cancelText}>Cancel Transaction</Text>
         </TouchableOpacity>
+
+        {/* Payment mode badge */}
+        {paymentPlan && (
+          <View style={styles.modeBadge}>
+            <MaterialIcons
+              name={paymentPlan.mode === 'direct' ? 'bolt' : paymentPlan.mode === 'native' ? 'diamond' : 'swap-horiz'}
+              size={14}
+              color={C.primary}
+            />
+            <Text style={styles.modeBadgeText}>
+              {paymentPlan.mode === 'direct'
+                ? 'Direct Settlement on Unichain'
+                : paymentPlan.mode === 'native'
+                  ? 'Native ETH Settlement'
+                  : `Cross-chain via ${routeInfo.routeLabel}`}
+            </Text>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -358,4 +524,15 @@ const styles = StyleSheet.create({
     gap: 12, alignItems: 'center',
   },
   cancelText: { fontSize: 14, fontWeight: '500', color: C.textTertiary, paddingVertical: 8 },
+  modeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: C.primary + '12',
+    borderRadius: R.full,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    alignSelf: 'center',
+  },
+  modeBadgeText: { fontSize: 11, fontWeight: '600', color: C.primary },
 });

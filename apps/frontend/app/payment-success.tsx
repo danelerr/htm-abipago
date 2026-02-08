@@ -1,5 +1,6 @@
 /**
  * Payment Success Receipt — shows confirmation, route summary, tx hashes.
+ * Receives real transaction data from routing-progress via route params.
  * Adapted from: stitch/payment_success_receipt/code.html
  */
 import React from 'react';
@@ -11,24 +12,79 @@ import {
   ScrollView,
   Image,
   Alert,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { C, S, R } from '@/constants/theme';
+import { chainName } from '@/services/ens';
 
-const MOCK_SOURCE_HASH = '0x71c76a4f8e3b9d012abc4def567890abcdef892a';
-const MOCK_DEST_HASH = '0x3b2e9c7d456f1a2b3c4d5e6f7a8b9c0d1e2f119c';
+/* ─── Block explorer URLs by chain ID ────────────────────────────── */
+const EXPLORERS: Record<number, string> = {
+  1: 'https://etherscan.io/tx/',
+  10: 'https://optimistic.etherscan.io/tx/',
+  130: 'https://unichain.blockscout.com/tx/',
+  137: 'https://polygonscan.com/tx/',
+  8453: 'https://basescan.org/tx/',
+  42161: 'https://arbiscan.io/tx/',
+};
 
 export default function PaymentSuccessScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    merchantEns?: string;
+    merchantAddress?: string;
+    amount?: string;
+    asset?: string;
+    fromChainId?: string;
+    fromChainName?: string;
+    toChainId?: string;
+    toChainName?: string;
+    fromTokenSymbol?: string;
+    toTokenSymbol?: string;
+    fromAmount?: string;
+    sourceTxHash?: string;
+    destTxHash?: string;
+    networkFee?: string;
+    routeLabel?: string;
+    ref?: string;
+  }>();
+
+  const merchantEns = params.merchantEns || 'merchant.eth';
+  const amount = params.amount || '0.00';
+  const asset = params.asset || 'USDC';
+  const fromChainId = params.fromChainId ? parseInt(params.fromChainId, 10) : 42161;
+  const toChainId = params.toChainId ? parseInt(params.toChainId, 10) : 130;
+  const fromChainName = params.fromChainName || chainName(fromChainId);
+  const toChainName = params.toChainName || chainName(toChainId);
+  const fromTokenSymbol = params.fromTokenSymbol || 'ETH';
+  const toTokenSymbol = params.toTokenSymbol || asset;
+  const fromAmount = params.fromAmount || amount;
+  const sourceTxHash = params.sourceTxHash || '';
+  const destTxHash = params.destTxHash || sourceTxHash;
+  const networkFee = params.networkFee || '~$0.01';
+  const routeLabel = params.routeLabel || 'PayRouter • Direct';
 
   const copyHash = async (hash: string) => {
     await Clipboard.setStringAsync(hash);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert('Copied', hash);
+  };
+
+  const openExplorer = (hash: string, chainId: number) => {
+    const base = EXPLORERS[chainId];
+    if (base && hash) {
+      Linking.openURL(`${base}${hash}`);
+    }
+  };
+
+  // Chain abbreviation for badge
+  const chainAbbr = (id: number) => {
+    const map: Record<number, string> = { 1: 'ETH', 10: 'OP', 130: 'UNI', 137: 'POL', 8453: 'BASE', 42161: 'ARB' };
+    return map[id] ?? `#${id}`;
   };
 
   return (
@@ -59,18 +115,24 @@ export default function PaymentSuccessScreen() {
         <View style={styles.recipientSection}>
           <View style={styles.recipientAvatarRing}>
             <Image
-              source={{ uri: 'https://i.pravatar.cc/64?u=cafeteria' }}
+              source={{ uri: `https://i.pravatar.cc/64?u=${merchantEns}` }}
               style={styles.recipientAvatar}
             />
           </View>
           <View style={styles.recipientNameRow}>
-            <Text style={styles.recipientName}>cafeteria.eth</Text>
+            <Text style={styles.recipientName}>{merchantEns}</Text>
             <MaterialIcons name="verified" size={14} color={C.primary} />
           </View>
           <View style={styles.amountRow}>
-            <Text style={styles.amountVal}>3.50</Text>
-            <Text style={styles.amountToken}>USDC</Text>
+            <Text style={styles.amountVal}>{amount}</Text>
+            <Text style={styles.amountToken}>{asset}</Text>
           </View>
+          {params.ref ? (
+            <View style={styles.refPill}>
+              <MaterialIcons name="receipt-long" size={14} color={C.gray400} />
+              <Text style={styles.refText}>{params.ref}</Text>
+            </View>
+          ) : null}
         </View>
 
         {/* ── Transaction Route Card ───────────────────────────── */}
@@ -80,14 +142,14 @@ export default function PaymentSuccessScreen() {
           {/* Source row */}
           <View style={styles.txRow}>
             <View style={styles.chainBadge}>
-              <Text style={styles.chainBadgeText}>ARB</Text>
+              <Text style={styles.chainBadgeText}>{chainAbbr(fromChainId)}</Text>
               <View style={styles.tokenBadge}>
-                <Text style={styles.tokenBadgeText}>Ξ</Text>
+                <Text style={styles.tokenBadgeText}>{fromTokenSymbol.charAt(0)}</Text>
               </View>
             </View>
             <View>
-              <Text style={styles.txRowMain}>Sent 0.0012 ETH</Text>
-              <Text style={styles.txRowSub}>From Arbitrum</Text>
+              <Text style={styles.txRowMain}>Sent {fromAmount} {fromTokenSymbol}</Text>
+              <Text style={styles.txRowSub}>From {fromChainName}</Text>
             </View>
           </View>
 
@@ -96,21 +158,21 @@ export default function PaymentSuccessScreen() {
             <View style={styles.connectorLine} />
             <View style={styles.connectorPill}>
               <View style={styles.connectorDot} />
-              <Text style={styles.connectorText}>Routed via LI.FI</Text>
+              <Text style={styles.connectorText}>{routeLabel}</Text>
             </View>
           </View>
 
           {/* Destination row */}
           <View style={styles.txRow}>
             <View style={[styles.chainBadge, { backgroundColor: C.blue600 }]}>
-              <Text style={styles.chainBadgeText}>BASE</Text>
+              <Text style={styles.chainBadgeText}>{chainAbbr(toChainId)}</Text>
               <View style={[styles.tokenBadge, { backgroundColor: C.blue500 }]}>
-                <Text style={styles.tokenBadgeText}>$</Text>
+                <Text style={styles.tokenBadgeText}>{toTokenSymbol.charAt(0)}</Text>
               </View>
             </View>
             <View>
-              <Text style={[styles.txRowMain, { color: C.primary }]}>Received 3.50 USDC</Text>
-              <Text style={styles.txRowSub}>On Base</Text>
+              <Text style={[styles.txRowMain, { color: C.primary }]}>Received {amount} {toTokenSymbol}</Text>
+              <Text style={styles.txRowSub}>On {toChainName}</Text>
             </View>
           </View>
 
@@ -118,28 +180,48 @@ export default function PaymentSuccessScreen() {
           <View style={styles.feeDivider} />
           <View style={styles.feeRow}>
             <Text style={styles.feeLabel}>Network Fee</Text>
-            <Text style={styles.feeVal}>~$0.02</Text>
+            <Text style={styles.feeVal}>{networkFee}</Text>
+          </View>
+
+          {/* Contract */}
+          <View style={styles.feeRow}>
+            <Text style={styles.feeLabel}>Contract</Text>
+            <Text style={styles.feeVal}>PayRouter v2</Text>
           </View>
         </View>
 
         {/* ── Tx Hashes ────────────────────────────────────────── */}
-        <View style={styles.hashesSection}>
-          <TouchableOpacity style={styles.hashRow} onPress={() => copyHash(MOCK_SOURCE_HASH)}>
-            <View>
-              <Text style={styles.hashLabel}>Source Hash</Text>
-              <Text style={styles.hashVal}>{MOCK_SOURCE_HASH.slice(0, 8)}…{MOCK_SOURCE_HASH.slice(-4)}</Text>
-            </View>
-            <MaterialIcons name="content-copy" size={18} color={C.gray500} />
-          </TouchableOpacity>
+        {(sourceTxHash || destTxHash) && (
+          <View style={styles.hashesSection}>
+            {sourceTxHash ? (
+              <TouchableOpacity
+                style={styles.hashRow}
+                onPress={() => openExplorer(sourceTxHash, fromChainId)}
+                onLongPress={() => copyHash(sourceTxHash)}
+              >
+                <View>
+                  <Text style={styles.hashLabel}>Source Hash</Text>
+                  <Text style={styles.hashVal}>{sourceTxHash.slice(0, 10)}…{sourceTxHash.slice(-6)}</Text>
+                </View>
+                <MaterialIcons name="open-in-new" size={18} color={C.gray500} />
+              </TouchableOpacity>
+            ) : null}
 
-          <TouchableOpacity style={styles.hashRow} onPress={() => copyHash(MOCK_DEST_HASH)}>
-            <View>
-              <Text style={styles.hashLabel}>Dest Hash</Text>
-              <Text style={styles.hashVal}>{MOCK_DEST_HASH.slice(0, 8)}…{MOCK_DEST_HASH.slice(-4)}</Text>
-            </View>
-            <MaterialIcons name="open-in-new" size={18} color={C.gray500} />
-          </TouchableOpacity>
-        </View>
+            {destTxHash && destTxHash !== sourceTxHash ? (
+              <TouchableOpacity
+                style={styles.hashRow}
+                onPress={() => openExplorer(destTxHash, toChainId)}
+                onLongPress={() => copyHash(destTxHash)}
+              >
+                <View>
+                  <Text style={styles.hashLabel}>Dest Hash</Text>
+                  <Text style={styles.hashVal}>{destTxHash.slice(0, 10)}…{destTxHash.slice(-6)}</Text>
+                </View>
+                <MaterialIcons name="open-in-new" size={18} color={C.gray500} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        )}
       </ScrollView>
 
       {/* ── Bottom Actions ──────────────────────────────────────── */}
@@ -149,12 +231,19 @@ export default function PaymentSuccessScreen() {
           activeOpacity={0.85}
           onPress={() => router.replace('/(tabs)')}
         >
-          <Text style={styles.payAgainText}>Pay Again</Text>
-          <MaterialIcons name="payment" size={20} color={C.black} />
+          <Text style={styles.payAgainText}>Done</Text>
+          <MaterialIcons name="check-circle" size={20} color={C.black} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.shareBtn}>
-          <Text style={styles.shareText}>Share Receipt</Text>
-          <MaterialIcons name="share" size={16} color={C.white} />
+        <TouchableOpacity
+          style={styles.shareBtn}
+          onPress={() => {
+            const explorer = EXPLORERS[toChainId] ?? EXPLORERS[fromChainId];
+            const hash = destTxHash || sourceTxHash;
+            if (explorer && hash) Linking.openURL(`${explorer}${hash}`);
+          }}
+        >
+          <Text style={styles.shareText}>View on Explorer</Text>
+          <MaterialIcons name="open-in-new" size={16} color={C.white} />
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -203,6 +292,13 @@ const styles = StyleSheet.create({
   amountRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginTop: 4 },
   amountVal: { fontSize: 40, fontWeight: '800', color: C.white, letterSpacing: -2 },
   amountToken: { fontSize: 20, fontWeight: '700', color: C.gray400 },
+  refPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: C.cardDark, borderRadius: R.full,
+    paddingHorizontal: 12, paddingVertical: 4, marginTop: 8,
+    borderWidth: 1, borderColor: C.borderLight,
+  },
+  refText: { fontSize: 11, color: C.gray400 },
 
   /* Route card */
   routeCard: {

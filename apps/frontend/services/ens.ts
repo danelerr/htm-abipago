@@ -29,7 +29,7 @@ function getClient(): PublicClient {
   if (!_client) {
     _client = createPublicClient({
       chain: mainnet,
-      transport: http('https://eth.llamarpc.com'), // free public RPC
+      transport: http('https://eth-mainnet.g.alchemy.com/v2/KvuR1VlQ9mPp-SMWA5yK4'),
     }) as PublicClient;
   }
   return _client;
@@ -165,6 +165,7 @@ export function formatAddress(address: string, chars = 4): string {
 const CHAIN_NAMES: Record<number, string> = {
   1: 'Ethereum',
   10: 'Optimism',
+  130: 'Unichain',
   137: 'Polygon',
   8453: 'Base',
   42161: 'Arbitrum',
