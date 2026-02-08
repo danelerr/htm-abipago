@@ -1,67 +1,166 @@
 /**
- * Activity — Transaction history placeholder.
+ * Activity — On-chain transaction history from PayRouter events.
  */
-import React from 'react';
-import { View, Text, StyleSheet, FlatList } from 'react-native';
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  ActivityIndicator,
+  RefreshControl,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
+import { useAccount } from '@/services/appkit';
+import {
+  getPaymentHistory,
+  PaymentEvent,
+  formatTokenAmount,
+} from '@/services/payrouter';
+import {
+  getTokenByAddress,
+  PAY_ROUTER_CHAIN_ID,
+  NATIVE_ETH,
+} from '@/constants/contracts';
+import { formatAddress } from '@/services/ens';
 
-interface TxItem {
-  id: string;
-  label: string;
-  ens: string;
-  amount: string;
-  token: string;
-  date: string;
-  direction: 'sent' | 'received';
+/* ── helpers ──────────────────────────────────────────────── */
+
+function resolveTokenSymbol(tokenAddr: string): string {
+  const info = getTokenByAddress(PAY_ROUTER_CHAIN_ID, tokenAddr);
+  return info?.symbol ?? 'TOKEN';
 }
 
-const MOCK_TXS: TxItem[] = [
-  { id: '1', label: 'Coffee', ens: 'cafeteria.eth', amount: '3.50', token: 'USDC', date: 'Today, 09:41', direction: 'sent' },
-  { id: '2', label: 'Lunch', ens: 'resto.eth', amount: '12.00', token: 'USDC', date: 'Yesterday', direction: 'sent' },
-  { id: '3', label: 'Payment received', ens: 'alice.eth', amount: '25.00', token: 'USDC', date: 'Feb 4', direction: 'received' },
-];
+function resolveTokenDecimals(tokenAddr: string): number {
+  const info = getTokenByAddress(PAY_ROUTER_CHAIN_ID, tokenAddr);
+  return info?.decimals ?? 18;
+}
+
+function formatTimestamp(ts: bigint): string {
+  const date = new Date(Number(ts) * 1000);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / 86_400_000);
+
+  if (diffDays === 0) {
+    return `Today, ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  }
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/* ── component ────────────────────────────────────────────── */
 
 export default function ActivityScreen() {
-  const renderItem = ({ item }: { item: TxItem }) => (
-    <View style={styles.txRow}>
-      <View style={[styles.txIcon, { backgroundColor: item.direction === 'sent' ? C.error + '20' : C.success + '20' }]}>
-        <MaterialIcons
-          name={item.direction === 'sent' ? 'arrow-upward' : 'arrow-downward'}
-          size={20}
-          color={item.direction === 'sent' ? C.error : C.success}
-        />
+  const { address, isConnected } = useAccount();
+  const [events, setEvents] = useState<PaymentEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchHistory = useCallback(async () => {
+    if (!address) {
+      setEvents([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      const history = await getPaymentHistory(address as `0x${string}`);
+      setEvents(history);
+    } catch (err) {
+      console.warn('Failed to fetch payment history:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [address]);
+
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchHistory();
+    setRefreshing(false);
+  }, [fetchHistory]);
+
+  const renderItem = ({ item }: { item: PaymentEvent }) => {
+    const isSent = item.direction === 'sent';
+    const tokenAddr = isSent ? item.tokenIn : item.tokenOut;
+    const rawAmount = isSent ? item.amountIn : item.amountOut;
+    const symbol = resolveTokenSymbol(tokenAddr);
+    const decimals = resolveTokenDecimals(tokenAddr);
+    const amount = formatTokenAmount(rawAmount, decimals);
+    const counterparty = isSent ? item.receiver : item.payer;
+
+    return (
+      <View style={styles.txRow}>
+        <View
+          style={[
+            styles.txIcon,
+            { backgroundColor: isSent ? C.error + '20' : C.success + '20' },
+          ]}
+        >
+          <MaterialIcons
+            name={isSent ? 'arrow-upward' : 'arrow-downward'}
+            size={20}
+            color={isSent ? C.error : C.success}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.txLabel}>{isSent ? 'Sent' : 'Received'}</Text>
+          <Text style={styles.txEns}>{formatAddress(counterparty)}</Text>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={styles.txAmount}>
+            {isSent ? '-' : '+'}
+            {amount} {symbol}
+          </Text>
+          <Text style={styles.txDate}>{formatTimestamp(item.timestamp)}</Text>
+        </View>
       </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.txLabel}>{item.label}</Text>
-        <Text style={styles.txEns}>{item.ens}</Text>
-      </View>
-      <View style={{ alignItems: 'flex-end' }}>
-        <Text style={styles.txAmount}>
-          {item.direction === 'sent' ? '-' : '+'}{item.amount} {item.token}
-        </Text>
-        <Text style={styles.txDate}>{item.date}</Text>
-      </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
       <Text style={styles.title}>Activity</Text>
-      <FlatList
-        data={MOCK_TXS}
-        keyExtractor={(i) => i.id}
-        renderItem={renderItem}
-        contentContainerStyle={styles.list}
-        ItemSeparatorComponent={() => <View style={styles.sep} />}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <MaterialIcons name="receipt-long" size={48} color={C.gray700} />
-            <Text style={styles.emptyText}>No transactions yet</Text>
-          </View>
-        }
-      />
+
+      {!isConnected ? (
+        <View style={styles.empty}>
+          <MaterialIcons name="account-balance-wallet" size={48} color={C.gray700} />
+          <Text style={styles.emptyText}>Connect wallet to see history</Text>
+        </View>
+      ) : loading && events.length === 0 ? (
+        <View style={styles.empty}>
+          <ActivityIndicator size="large" color={C.primary} />
+          <Text style={styles.emptyText}>Loading history…</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={events}
+          keyExtractor={(e) => `${e.txHash}-${e.direction}`}
+          renderItem={renderItem}
+          contentContainerStyle={styles.list}
+          ItemSeparatorComponent={() => <View style={styles.sep} />}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={C.primary}
+              colors={[C.primary]}
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <MaterialIcons name="receipt-long" size={48} color={C.gray700} />
+              <Text style={styles.emptyText}>No transactions yet</Text>
+            </View>
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }

@@ -13,13 +13,16 @@ import {
   Image,
   ActivityIndicator,
   Alert,
+  Modal,
+  FlatList,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
-import { MOCK_ROUTE, MOCK_INVOICE } from '@/types';
+import { MOCK_INVOICE } from '@/types';
 import type { RouteInfo } from '@/types';
 import SwipeButton from '@/components/ui/swipe-button';
 import { useAccount } from '@/services/appkit';
@@ -30,8 +33,11 @@ import {
   PAY_ROUTER_CHAIN_ID,
   getTokenDecimals,
   getTokenAddress,
+  getTokensForChain,
   NATIVE_ETH,
+  type TokenInfo,
 } from '@/constants/contracts';
+import { getAddress } from 'viem';
 import {
   buildInvoice,
   buildPaymentPlan,
@@ -40,6 +46,12 @@ import {
   type OnChainInvoice,
   type PaymentPlan,
 } from '@/services/payrouter';
+
+/** Safely normalise a hex address to EIP-55 checksum; returns '' for empty/invalid */
+function safeChecksum(raw: string): string {
+  if (!raw || raw.length < 42) return raw;
+  try { return getAddress(raw); } catch { return raw; }
+}
 
 export default function ConfirmPaymentScreen() {
   const router = useRouter();
@@ -65,16 +77,49 @@ export default function ConfirmPaymentScreen() {
   const payRef = params.ref ?? MOCK_INVOICE.ref;
   const destChainId = params.destChainId ? parseInt(params.destChainId, 10) : PAY_ROUTER_CHAIN_ID;
   const destChainLabel = chainName(destChainId);
-  const tokenOutAddr = params.token ?? params.destToken ?? '';
+  const tokenOutAddr = safeChecksum(params.token ?? params.destToken ?? '');
   const tokenOutDecimals = params.decimals ? parseInt(params.decimals, 10) : 6;
-  const merchantReceiver = params.receiver ?? '';
+  const merchantReceiver = safeChecksum(params.receiver ?? '');
   const routerAddr = params.routerAddr ?? PAY_ROUTER_ADDRESS;
   const slippageBps = params.slippageBps ? parseInt(params.slippageBps, 10) : 50;
+  const invoiceAsset = params.assetHint || 'TOKEN';
 
-  // Route fetching state
-  const [routeInfo, setRouteInfo] = useState<RouteInfo>(MOCK_ROUTE);
+  // ── Payer chain + token selection ─────────────────────────────
+  const payerChainId = typeof walletChainId === 'string'
+    ? parseInt(walletChainId, 10)
+    : (walletChainId ?? 1);
+  const isCrossChain = payerChainId !== destChainId;
+  const payerTokens = useMemo(() => getTokensForChain(payerChainId), [payerChainId]);
+  const [selectedPayToken, setSelectedPayToken] = useState<TokenInfo | null>(null);
+  const [showTokenPicker, setShowTokenPicker] = useState(false);
+
+  // Effective pay token: user‑selected, or native ETH default
+  const defaultPayToken = payerTokens.find(t => t.address.toLowerCase() === NATIVE_ETH.toLowerCase()) ?? payerTokens[0];
+  const effectivePayToken = selectedPayToken ?? defaultPayToken ?? null;
+  const effectivePayTokenAddr = effectivePayToken?.address === NATIVE_ETH
+    ? '0x0000000000000000000000000000000000000000'
+    : (effectivePayToken?.address ?? '0x0000000000000000000000000000000000000000');
+
+  // Route fetching state — start with invoice params, not mock data
+  const [routeInfo, setRouteInfo] = useState<RouteInfo>({
+    fromChainName: chainName(payerChainId),
+    fromChainId: payerChainId,
+    toChainName: chainName(destChainId),
+    toChainId: destChainId,
+    fromToken: '',
+    fromTokenSymbol: '…',
+    toToken: tokenOutAddr,
+    toTokenSymbol: invoiceAsset,
+    fromAmount: '…',
+    toAmount: payAmount,
+    estimatedGasFee: '—',
+    estimatedTimeSeconds: 0,
+    routeLabel: 'Calculating…',
+  });
   const [lifiQuote, setLifiQuote] = useState<LiFiStep | null>(null);
   const [fetchingRoute, setFetchingRoute] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   // On-chain invoice + payment plan
   const [onChainInvoice, setOnChainInvoice] = useState<OnChainInvoice | null>(null);
@@ -96,25 +141,36 @@ export default function ConfirmPaymentScreen() {
 
   // Fetch a real LI.FI quote when wallet is connected
   useEffect(() => {
-    if (!address || !tokenOutAddr || !destChainId) return;
+    if (!address || !destChainId) return;
     let cancelled = false;
+    const controller = new AbortController();
+
+    // Timeout after 15s to prevent infinite loading
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 15000);
+
     (async () => {
       setFetchingRoute(true);
+      setRouteError(null);
       try {
-        const payerChain = typeof walletChainId === 'string' ? parseInt(walletChainId, 10) : (walletChainId ?? 42161);
-        const isSameChain = payerChain === destChainId;
+        // If tokenOutAddr is missing, can't determine route
+        if (!tokenOutAddr) {
+          if (!cancelled) setFetchingRoute(false);
+          return;
+        }
 
         // On same-chain with known token — show direct route
-        if (isSameChain) {
+        if (!isCrossChain) {
           setRouteInfo({
             fromChainName: chainName(destChainId),
             fromChainId: destChainId,
             toChainName: chainName(destChainId),
             toChainId: destChainId,
             fromToken: tokenOutAddr,
-            fromTokenSymbol: params.assetHint || 'USDC',
+            fromTokenSymbol: invoiceAsset,
             toToken: tokenOutAddr,
-            toTokenSymbol: params.assetHint || 'USDC',
+            toTokenSymbol: invoiceAsset,
             fromAmount: payAmount,
             toAmount: payAmount,
             estimatedGasFee: '~$0.01',
@@ -126,9 +182,9 @@ export default function ConfirmPaymentScreen() {
           if (onChainInvoice) {
             const amountInRaw = parseUnits(payAmount, tokenOutDecimals);
             const plan = await buildPaymentPlan({
-              payerChainId: payerChain,
+              payerChainId,
               destChainId,
-              tokenInSymbol: params.assetHint || 'USDC',
+              tokenInSymbol: invoiceAsset,
               tokenInAddress: tokenOutAddr,
               amountInHuman: payAmount,
               amountInRaw,
@@ -158,12 +214,23 @@ export default function ConfirmPaymentScreen() {
           );
         }
 
-        // Use contractCalls endpoint if we have calldata, else fallback to simple quote
+        // Wrap LI.FI fetch with abort signal via Promise.race
+        const fetchWithTimeout = <T,>(promise: Promise<T>): Promise<T> =>
+          Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+              controller.signal.addEventListener('abort', () =>
+                reject(new Error('Route quote timed out'))
+              );
+            }),
+          ]);
+
+        // Use user-selected token as source (effectivePayTokenAddr)
         let quote: import('@/services/lifi').LiFiStep;
         if (contractCallData) {
-          quote = await getQuoteContractCalls({
-            fromChain: payerChain,
-            fromToken: '0x0000000000000000000000000000000000000000', // native ETH
+          quote = await fetchWithTimeout(getQuoteContractCalls({
+            fromChain: payerChainId,
+            fromToken: effectivePayTokenAddr,
             fromAddress: address,
             toChain: destChainId,
             toToken: tokenOutAddr,
@@ -177,18 +244,18 @@ export default function ConfirmPaymentScreen() {
               toContractGasLimit: '400000',
             }],
             slippage: slippageBps / 10000,
-          });
+          }));
         } else {
-          quote = await getQuoteToAmount({
-            fromChain: payerChain,
+          quote = await fetchWithTimeout(getQuoteToAmount({
+            fromChain: payerChainId,
             toChain: destChainId,
-            fromToken: '0x0000000000000000000000000000000000000000',
+            fromToken: effectivePayTokenAddr,
             toToken: tokenOutAddr,
             fromAddress: address,
             toAddress: address,
             toAmount: toAmountRaw,
             slippage: slippageBps / 10000,
-          });
+          }));
         }
         if (cancelled) return;
         setLifiQuote(quote);
@@ -219,7 +286,7 @@ export default function ConfirmPaymentScreen() {
         // Build cross-chain payment plan
         if (onChainInvoice) {
           const plan = await buildPaymentPlan({
-            payerChainId: payerChain,
+            payerChainId,
             destChainId,
             tokenInSymbol: quote.action.fromToken.symbol,
             tokenInAddress: quote.action.fromToken.address,
@@ -230,15 +297,30 @@ export default function ConfirmPaymentScreen() {
           });
           if (!cancelled) setPaymentPlan(plan);
         }
-      } catch (err) {
-        console.warn('[confirm] LI.FI quote failed:', err);
-        // Keep mock route on error
+      } catch (err: any) {
+        const msg = err?.message ?? String(err);
+        console.warn('[confirm] LI.FI quote failed:', msg);
+        if (!cancelled) {
+          if (msg.includes('deny list') || msg.includes('invalid')) {
+            setRouteError(
+              `${invoiceAsset} on ${destChainLabel} is not available for cross-chain routing yet. Ask the merchant to accept a different token (e.g. USDC).`,
+            );
+          } else if (msg.includes('timed out')) {
+            setRouteError('Route search timed out. Tap "Retry" to try again.');
+          } else {
+            setRouteError(`Route error: ${msg.slice(0, 120)}`);
+          }
+        }
       } finally {
+        clearTimeout(timeout);
         if (!cancelled) setFetchingRoute(false);
       }
     })();
-    return () => { cancelled = true; };
-  }, [address, tokenOutAddr, destChainId, walletChainId, onChainInvoice, payAmount, payRef]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [address, tokenOutAddr, destChainId, payerChainId, isCrossChain, effectivePayTokenAddr, onChainInvoice, payAmount, payRef, retryCount]);
 
   const handleConfirm = useCallback(() => {
     if (!paymentPlan || !onChainInvoice) {
@@ -254,7 +336,7 @@ export default function ConfirmPaymentScreen() {
         merchantEns,
         merchantAddress: merchantReceiver,
         amount: payAmount,
-        asset: params.assetHint || 'USDC',
+        asset: invoiceAsset,
         ref: payRef,
         // Invoice data
         invoiceReceiver: onChainInvoice.receiver,
@@ -327,9 +409,13 @@ export default function ConfirmPaymentScreen() {
         <View style={styles.amountSection}>
           <View style={styles.amountRow}>
             <Text style={styles.amountVal}>{payAmount}</Text>
-            <Text style={styles.amountToken}>{params.assetHint || MOCK_INVOICE.assetHint}</Text>
+            <Text style={styles.amountToken}>{invoiceAsset}</Text>
           </View>
-          <Text style={styles.amountFiat}>≈ {routeInfo.fromAmount} {routeInfo.fromTokenSymbol}</Text>
+          {fetchingRoute ? (
+            <Text style={styles.amountFiat}>Calculating best route…</Text>
+          ) : (
+            <Text style={styles.amountFiat}>≈ {routeInfo.fromAmount} {routeInfo.fromTokenSymbol}</Text>
+          )}
           <View style={styles.refPill}>
             <MaterialIcons name="local-cafe" size={16} color={C.textSecondary} />
             <Text style={styles.refText}>{payRef || 'Payment'}</Text>
@@ -337,7 +423,20 @@ export default function ConfirmPaymentScreen() {
         </View>
 
         {/* ── Route Details Card ────────────────────────────────── */}
-        {fetchingRoute ? (
+        {routeError ? (
+          <View style={[styles.routeCard, { alignItems: 'center', paddingVertical: 24 }]}>
+            <MaterialIcons name="error-outline" size={36} color={C.error} />
+            <Text style={[styles.routeTitle, { marginTop: 12, marginBottom: 8, textTransform: 'none', letterSpacing: 0, textAlign: 'center', fontSize: 14, color: C.textSecondary }]}>
+              {routeError}
+            </Text>
+            <TouchableOpacity
+              style={{ marginTop: 8, backgroundColor: C.primary + '1A', borderRadius: R.full, paddingHorizontal: 20, paddingVertical: 8 }}
+              onPress={() => { setRouteError(null); setRetryCount(c => c + 1); }}
+            >
+              <Text style={{ fontSize: 13, fontWeight: '600', color: C.primary }}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        ) : fetchingRoute ? (
           <View style={[styles.routeCard, { alignItems: 'center', paddingVertical: 32 }]}>
             <ActivityIndicator color={C.primary} size="large" />
             <Text style={[styles.routeTitle, { marginTop: 12, marginBottom: 0 }]}>
@@ -346,10 +445,23 @@ export default function ConfirmPaymentScreen() {
           </View>
         ) : (
           <View style={styles.routeCard}>
-            <Text style={styles.routeTitle}>Route Details</Text>
+            <View style={styles.routeTitleRow}>
+              <Text style={styles.routeTitle}>Route Details</Text>
+              {!fetchingRoute && isCrossChain && !selectedPayToken && (
+                <View style={styles.bestRouteBadge}>
+                  <MaterialIcons name="auto-awesome" size={12} color={C.primary} />
+                  <Text style={styles.bestRouteText}>Best route</Text>
+                </View>
+              )}
+            </View>
 
-          {/* Source */}
-          <View style={styles.routeRow}>
+          {/* Source — tappable for cross-chain token selection */}
+          <TouchableOpacity
+            style={styles.routeRow}
+            activeOpacity={isCrossChain ? 0.7 : 1}
+            onPress={() => isCrossChain && setShowTokenPicker(true)}
+            disabled={!isCrossChain}
+          >
             <View style={[styles.chainIcon, { backgroundColor: C.info + '33' }]}>
               <MaterialIcons name="layers" size={20} color={C.info} />
             </View>
@@ -361,7 +473,8 @@ export default function ConfirmPaymentScreen() {
               </Text>
             </View>
             <Text style={styles.routeAmount}>{routeInfo.fromAmount}</Text>
-          </View>
+            {isCrossChain && <MaterialIcons name="expand-more" size={18} color={C.textMuted} />}
+          </TouchableOpacity>
 
           {/* Arrow */}
           <View style={styles.arrowWrap}>
@@ -370,7 +483,7 @@ export default function ConfirmPaymentScreen() {
             </View>
           </View>
 
-          {/* Destination */}
+          {/* Destination — always show invoice data */}
           <View style={styles.routeRow}>
             <View style={[styles.chainIcon, { backgroundColor: C.blue600 + '33' }]}>
               <MaterialIcons name="radio-button-checked" size={20} color={C.blue500} />
@@ -378,11 +491,11 @@ export default function ConfirmPaymentScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.routeLabel}>Merchant gets</Text>
               <Text style={styles.routeVal}>
-                {routeInfo.toTokenSymbol}{' '}
-                <Text style={styles.routeChain}>on {routeInfo.toChainName}</Text>
+                {invoiceAsset}{' '}
+                <Text style={styles.routeChain}>on {destChainLabel}</Text>
               </Text>
             </View>
-            <Text style={styles.routeAmount}>{routeInfo.toAmount}</Text>
+            <Text style={styles.routeAmount}>{payAmount}</Text>
           </View>
 
           {/* Fees */}
@@ -447,6 +560,39 @@ export default function ConfirmPaymentScreen() {
           </View>
         )}
       </View>
+
+      {/* ── Token Picker Modal ──────────────────────────────────── */}
+      <Modal visible={showTokenPicker} transparent animationType="fade" onRequestClose={() => setShowTokenPicker(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowTokenPicker(false)}>
+          <View style={styles.pickerSheet}>
+            <Text style={styles.pickerTitle}>Pay with</Text>
+            <Text style={styles.pickerSub}>Select token on {chainName(payerChainId)}</Text>
+            <FlatList
+              data={payerTokens}
+              keyExtractor={(t) => t.symbol}
+              renderItem={({ item }) => {
+                const isSelected = effectivePayToken?.symbol === item.symbol;
+                return (
+                  <TouchableOpacity
+                    style={[styles.pickerRow, isSelected && styles.pickerRowActive]}
+                    onPress={() => {
+                      setSelectedPayToken(item);
+                      setShowTokenPicker(false);
+                    }}
+                  >
+                    <View style={[styles.pickerDot, { backgroundColor: item.color }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.pickerRowText}>{item.symbol}</Text>
+                      <Text style={styles.pickerRowSub}>{item.name}</Text>
+                    </View>
+                    {isSelected && <MaterialIcons name="check" size={18} color={C.primary} />}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -515,8 +661,18 @@ const styles = StyleSheet.create({
   routeTitle: {
     fontSize: 12, fontWeight: '500', color: C.textMuted,
     textTransform: 'uppercase', letterSpacing: 1,
-    paddingHorizontal: 8, marginBottom: S.sm,
+    paddingHorizontal: 8,
   },
+  routeTitleRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: S.sm,
+  },
+  bestRouteBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: C.primary + '1A', borderRadius: R.full,
+    paddingHorizontal: 8, paddingVertical: 3,
+  },
+  bestRouteText: { fontSize: 10, fontWeight: '600', color: C.primary },
   routeRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: C.bgDarkAlt + '80', borderRadius: R.lg,
@@ -574,4 +730,25 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   modeBadgeText: { fontSize: 11, fontWeight: '600', color: C.primary },
+
+  /* Token picker modal */
+  modalBackdrop: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    backgroundColor: C.cardDark, borderTopLeftRadius: R.xxl, borderTopRightRadius: R.xxl,
+    padding: S.lg, paddingBottom: 40, maxHeight: '60%',
+  },
+  pickerTitle: { fontSize: 18, fontWeight: '700', color: C.white, marginBottom: 2 },
+  pickerSub: { fontSize: 13, color: C.textMuted, marginBottom: S.md },
+  pickerRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 12, paddingHorizontal: 8,
+    borderRadius: R.lg,
+  },
+  pickerRowActive: { backgroundColor: C.primary + '12' },
+  pickerDot: { width: 10, height: 10, borderRadius: 5 },
+  pickerRowText: { fontSize: 15, fontWeight: '600', color: C.white },
+  pickerRowSub: { fontSize: 11, color: C.textMuted },
 });

@@ -78,7 +78,7 @@ export default function RoutingProgressScreen() {
   }>();
 
   const { address, chainId: walletChainId } = useAccount();
-  const { walletProvider } = useProvider();
+  const { provider: walletProvider } = useProvider();
   const executingRef = useRef(false);
 
   // Reconstruct the on-chain invoice from params

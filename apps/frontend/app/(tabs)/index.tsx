@@ -3,7 +3,7 @@
  * and primary actions (Pay / Receive).
  * Adapted from: stitch/home_dashboard/code.html
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,8 @@ import {
   TouchableOpacity,
   ScrollView,
   Image,
+  ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -18,6 +20,13 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { C, S, R } from '@/constants/theme';
 import { useAppKit, useAccount } from '@/services/appkit';
 import { resolveName, resolveAvatar, formatAddress } from '@/services/ens';
+import { getTokenBalance, getNativeBalance, formatTokenAmount } from '@/services/payrouter';
+import {
+  PAY_ROUTER_CHAIN_ID,
+  NATIVE_ETH,
+  getTokensForChain,
+  type TokenInfo,
+} from '@/constants/contracts';
 
 export default function HomeDashboard() {
   const router = useRouter();
@@ -26,6 +35,9 @@ export default function HomeDashboard() {
 
   const [ensName, setEnsName] = useState<string | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [balances, setBalances] = useState<{ token: TokenInfo; balance: string; raw: bigint }[]>([]);
+  const [loadingBalances, setLoadingBalances] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Resolve ENS reverse name + avatar when address changes
   useEffect(() => {
@@ -47,6 +59,44 @@ export default function HomeDashboard() {
       }
     })();
   }, [address]);
+
+  // Fetch token balances on Unichain
+  const fetchBalances = useCallback(async () => {
+    if (!address) {
+      setBalances([]);
+      return;
+    }
+    setLoadingBalances(true);
+    try {
+      const tokens = getTokensForChain(PAY_ROUTER_CHAIN_ID);
+      const results = await Promise.allSettled(
+        tokens.map(async (token) => {
+          const isNative = token.address.toLowerCase() === NATIVE_ETH.toLowerCase();
+          const raw = isNative
+            ? await getNativeBalance(address as `0x${string}`)
+            : await getTokenBalance(token.address as `0x${string}`, address as `0x${string}`);
+          return { token, balance: formatTokenAmount(raw, token.decimals, 4), raw };
+        }),
+      );
+      const resolved = results
+        .filter((r): r is PromiseFulfilledResult<{ token: TokenInfo; balance: string; raw: bigint }> => r.status === 'fulfilled')
+        .map((r) => r.value)
+        .filter((b) => b.raw > 0n); // Only show tokens with balance
+      setBalances(resolved);
+    } catch (err) {
+      console.warn('[home] balance fetch error:', err);
+    } finally {
+      setLoadingBalances(false);
+    }
+  }, [address]);
+
+  useEffect(() => { fetchBalances(); }, [fetchBalances]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchBalances();
+    setRefreshing(false);
+  }, [fetchBalances]);
 
   const CHAIN_MAP: Record<number, string> = {
     1: 'Ethereum',
@@ -74,6 +124,14 @@ export default function HomeDashboard() {
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={C.primary}
+            colors={[C.primary]}
+          />
+        }
       >
         {/* ── Connection Status Card ────────────────────────────── */}
         <TouchableOpacity style={styles.statusCard} activeOpacity={0.7} onPress={() => open()}>
@@ -168,6 +226,31 @@ export default function HomeDashboard() {
             <Text style={styles.actionLabel}>Receive</Text>
           </TouchableOpacity>
         </View>
+
+        {/* ── Token Balances ────────────────────────────────────── */}
+        {isConnected && (
+          <View style={styles.balanceSection}>
+            <View style={styles.balanceHeader}>
+              <Text style={styles.balanceSectionTitle}>Balances on Unichain</Text>
+              {loadingBalances && <ActivityIndicator size="small" color={C.primary} />}
+            </View>
+            {balances.length === 0 && !loadingBalances ? (
+              <View style={styles.emptyBalance}>
+                <MaterialIcons name="account-balance-wallet" size={32} color={C.gray700} />
+                <Text style={styles.emptyBalanceText}>No tokens found</Text>
+              </View>
+            ) : (
+              balances.map((b) => (
+                <View key={b.token.symbol} style={styles.balanceRow}>
+                  <View style={[styles.tokenDot, { backgroundColor: b.token.color }]} />
+                  <Text style={styles.tokenSymbol}>{b.token.symbol}</Text>
+                  <Text style={styles.tokenName}>{b.token.name}</Text>
+                  <Text style={styles.tokenBalance}>{b.balance}</Text>
+                </View>
+              ))
+            )}
+          </View>
+        )}
 
         {/* ── History link ──────────────────────────────────────── */}
         <TouchableOpacity
@@ -271,6 +354,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   actionLabel: { fontSize: 18, fontWeight: '700', color: C.primaryDark },
+
+  balanceSection: {
+    marginTop: S.xl,
+    backgroundColor: C.surfaceDark,
+    borderWidth: 1,
+    borderColor: C.borderDark,
+    borderRadius: R.lg,
+    padding: S.md,
+  },
+  balanceHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: S.sm,
+  },
+  balanceSectionTitle: { fontSize: 15, fontWeight: '700', color: C.white },
+  emptyBalance: { alignItems: 'center', paddingVertical: S.lg, gap: 8 },
+  emptyBalanceText: { fontSize: 13, color: C.gray400, fontWeight: '500' },
+  balanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: C.borderDark + '60',
+  },
+  tokenDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+  tokenSymbol: { fontSize: 15, fontWeight: '700', color: C.white, width: 60 },
+  tokenName: { flex: 1, fontSize: 13, color: C.gray400, fontWeight: '500' },
+  tokenBalance: { fontSize: 15, fontWeight: '600', color: C.white },
 
   historyBtn: {
     flexDirection: 'row',

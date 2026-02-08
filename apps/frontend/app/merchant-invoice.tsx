@@ -212,18 +212,37 @@ export default function MerchantInvoiceScreen() {
       Alert.alert('Amount required', 'Enter an amount before writing NFC tag.');
       return;
     }
+    const bytes = Ndef.encodeMessage([Ndef.uriRecord(invoiceUri)]);
+    if (!bytes) {
+      Alert.alert('Error', 'Failed to encode invoice for NFC.');
+      return;
+    }
     try {
       setNfcWriting(true);
-      await NfcManager.requestTechnology(NfcTech.Ndef);
-      const bytes = Ndef.encodeMessage([Ndef.textRecord(invoiceUri)]);
-      if (bytes) {
+      // Try standard NDEF write first
+      try {
+        await NfcManager.requestTechnology(NfcTech.Ndef);
         await NfcManager.ndefHandler.writeNdefMessage(bytes);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Success', 'Invoice written to NFC tag!');
+      } catch {
+        // Tag might not be NDEF-formatted — try formatting it (Android only)
+        await NfcManager.cancelTechnologyRequest().catch(() => {});
+        if (Platform.OS === 'android') {
+          await NfcManager.requestTechnology(NfcTech.NdefFormatable);
+          await (NfcManager as any).ndefFormatableHandlerAndroid.formatNdef(bytes);
+        } else {
+          throw new Error(
+            'This NFC tag is not NDEF-formatted. Please use a compatible tag.',
+          );
+        }
       }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Success', 'Invoice written to NFC tag!');
     } catch (e: any) {
       if (!e?.message?.includes('cancelled')) {
-        Alert.alert('NFC Write Error', e?.message || 'Could not write to NFC tag.');
+        Alert.alert(
+          'NFC Write Error',
+          e?.message || 'Could not write to NFC tag. Try a different NDEF-compatible tag.',
+        );
       }
     } finally {
       NfcManager.cancelTechnologyRequest().catch(() => {});

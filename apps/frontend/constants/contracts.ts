@@ -68,14 +68,14 @@ export const TOKEN_REGISTRY: Record<number, Record<string, TokenInfo>> = {
       color: '#2775CA',
     },
     USDT: {
-      address: '0x588CE4F028D8e787B2d7cfe46A3B2B0FCea0cCaF',
+      address: '0x588cE4F028d8E787b2D7CFE46a3B2b0FcEA0cCAF',
       symbol: 'USDT',
       name: 'Tether',
       decimals: 6,
       color: '#50AF95',
     },
     DAI: {
-      address: '0x20CAb320A855b39F724131C69424F4dEC30Ef08d',
+      address: '0x20caB320a855b39f724131c69424F4deC30EF08d',
       symbol: 'DAI',
       name: 'Dai',
       decimals: 18,
@@ -164,6 +164,17 @@ export function getTokenAddress(chainId: number, symbol: string): string | null 
  */
 export function getTokenDecimals(chainId: number, symbol: string): number {
   return TOKEN_REGISTRY[chainId]?.[symbol]?.decimals ?? 18;
+}
+
+/**
+ * Resolve a token by its on-chain address (case-insensitive).
+ * Searches the given chain registry; returns null if not found.
+ */
+export function getTokenByAddress(chainId: number, address: string): TokenInfo | null {
+  const registry = TOKEN_REGISTRY[chainId];
+  if (!registry) return null;
+  const lower = address.toLowerCase();
+  return Object.values(registry).find((t) => t.address.toLowerCase() === lower) ?? null;
 }
 
 

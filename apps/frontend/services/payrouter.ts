@@ -305,6 +305,119 @@ export async function getTokenBalance(
   }) as Promise<bigint>;
 }
 
+/**
+ * Get native ETH balance on Unichain.
+ */
+export async function getNativeBalance(account: Address): Promise<bigint> {
+  const client = getPublicClient();
+  return client.getBalance({ address: account });
+}
+
+/**
+ * Fetch recent PaymentExecuted events for an address (as payer or receiver).
+ */
+export interface PaymentEvent {
+  ref: `0x${string}`;
+  receiver: Address;
+  payer: Address;
+  tokenIn: Address;
+  amountIn: bigint;
+  tokenOut: Address;
+  amountOut: bigint;
+  fee: bigint;
+  timestamp: bigint;
+  txHash: `0x${string}`;
+  blockNumber: bigint;
+  direction: 'sent' | 'received';
+}
+
+export async function getPaymentHistory(
+  account: Address,
+  fromBlock?: bigint,
+): Promise<PaymentEvent[]> {
+  const client = getPublicClient();
+  const startBlock = fromBlock ?? BigInt(0);
+
+  // Fetch events where account is payer
+  const sentLogs = await client.getLogs({
+    address: PAY_ROUTER_ADDRESS,
+    event: {
+      type: 'event',
+      name: 'PaymentExecuted',
+      inputs: [
+        { name: 'ref', type: 'bytes32', indexed: true },
+        { name: 'receiver', type: 'address', indexed: true },
+        { name: 'payer', type: 'address', indexed: true },
+        { name: 'tokenIn', type: 'address', indexed: false },
+        { name: 'amountIn', type: 'uint256', indexed: false },
+        { name: 'tokenOut', type: 'address', indexed: false },
+        { name: 'amountOut', type: 'uint256', indexed: false },
+        { name: 'fee', type: 'uint256', indexed: false },
+        { name: 'timestamp', type: 'uint256', indexed: false },
+      ],
+    },
+    args: { payer: account },
+    fromBlock: startBlock,
+    toBlock: 'latest',
+  });
+
+  // Fetch events where account is receiver
+  const receivedLogs = await client.getLogs({
+    address: PAY_ROUTER_ADDRESS,
+    event: {
+      type: 'event',
+      name: 'PaymentExecuted',
+      inputs: [
+        { name: 'ref', type: 'bytes32', indexed: true },
+        { name: 'receiver', type: 'address', indexed: true },
+        { name: 'payer', type: 'address', indexed: true },
+        { name: 'tokenIn', type: 'address', indexed: false },
+        { name: 'amountIn', type: 'uint256', indexed: false },
+        { name: 'tokenOut', type: 'address', indexed: false },
+        { name: 'amountOut', type: 'uint256', indexed: false },
+        { name: 'fee', type: 'uint256', indexed: false },
+        { name: 'timestamp', type: 'uint256', indexed: false },
+      ],
+    },
+    args: { receiver: account },
+    fromBlock: startBlock,
+    toBlock: 'latest',
+  });
+
+  const parseLog = (log: any, direction: 'sent' | 'received'): PaymentEvent => ({
+    ref: log.args.ref,
+    receiver: log.args.receiver,
+    payer: log.args.payer,
+    tokenIn: log.args.tokenIn,
+    amountIn: log.args.amountIn,
+    tokenOut: log.args.tokenOut,
+    amountOut: log.args.amountOut,
+    fee: log.args.fee,
+    timestamp: log.args.timestamp,
+    txHash: log.transactionHash,
+    blockNumber: log.blockNumber,
+    direction,
+  });
+
+  const sent = sentLogs.map((l) => parseLog(l, 'sent'));
+  const received = receivedLogs
+    .filter((l) => l.args.receiver?.toLowerCase() !== l.args.payer?.toLowerCase())
+    .map((l) => parseLog(l, 'received'));
+
+  // Merge, dedupe, sort newest first
+  const all = [...sent, ...received];
+  const seen = new Set<string>();
+  const deduped = all.filter((e) => {
+    const key = `${e.txHash}-${e.direction}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  deduped.sort((a, b) => Number(b.timestamp - a.timestamp));
+
+  return deduped;
+}
+
 /* ─── Settlement functions ───────────────────────────────────────── */
 
 /**

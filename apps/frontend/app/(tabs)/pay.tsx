@@ -157,15 +157,63 @@ export default function ScanPayScreen() {
       await NfcManager.requestTechnology(NfcTech.Ndef);
       const tag = await NfcManager.getTag();
       if (tag?.ndefMessage && tag.ndefMessage.length > 0) {
-        const record = tag.ndefMessage[0];
-        const text = Ndef.text.decodePayload(new Uint8Array(record.payload));
-        if (text) {
-          await handlePayload(text);
-        } else {
-          Alert.alert('NFC', 'Could not read NFC tag payload.');
+        // Try each record until we find a valid payload
+        let found = false;
+        for (const record of tag.ndefMessage) {
+          const payload = new Uint8Array(record.payload);
+          let text: string | null = null;
+
+          // TNF 0x01 = Well-Known, RTD 'T' = Text, RTD 'U' = URI
+          if (record.tnf === 1) {
+            const rtd = String.fromCharCode(...record.type);
+            if (rtd === 'T') {
+              // Text record: first byte = language code length, then lang, then text
+              try { text = Ndef.text.decodePayload(payload); } catch {}
+            } else if (rtd === 'U') {
+              // URI record: first byte = URI prefix code, rest is URI
+              try { text = Ndef.uri.decodePayload(payload); } catch {}
+            }
+          } else if (record.tnf === 2) {
+            // MIME type record — payload is raw bytes
+            try { text = new TextDecoder().decode(payload); } catch {}
+          } else if (record.tnf === 4) {
+            // External type — try raw decode
+            try { text = new TextDecoder().decode(payload); } catch {}
+          }
+
+          // Fallback: try raw text decode if nothing else worked
+          if (!text && payload.length > 0) {
+            try { text = new TextDecoder().decode(payload); } catch {}
+          }
+
+          if (text && text.includes('abipago:')) {
+            // Extract the abipago URI even if there's extra data
+            const match = text.match(/abipago:\/\/[^\s]+/);
+            if (match) {
+              await handlePayload(match[0]);
+              found = true;
+              break;
+            }
+          }
+        }
+
+        if (!found) {
+          // Last resort: try decoding the first record as raw text
+          const firstPayload = new Uint8Array(tag.ndefMessage[0].payload);
+          let rawText: string | null = null;
+          try { rawText = Ndef.text.decodePayload(firstPayload); } catch {}
+          if (!rawText) {
+            try { rawText = new TextDecoder().decode(firstPayload); } catch {}
+          }
+
+          if (rawText) {
+            await handlePayload(rawText);
+          } else {
+            Alert.alert('NFC', 'Tag does not contain a valid AbiPago invoice.');
+          }
         }
       } else {
-        Alert.alert('NFC', 'No NDEF data found on tag.');
+        Alert.alert('NFC', 'No NDEF data found. Make sure the tag is formatted as NDEF.');
       }
     } catch (e: any) {
       if (e?.message !== 'cancelled') {
