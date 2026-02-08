@@ -1,3 +1,7 @@
+# Important
+In the presentation video, the demo portion cut off at a crucial moment, and the audio is out of sync. You can review the contract and its transactions directly
+https://unichain.blockscout.com/address/0x91Bf4c06D2A588980450Bb6AEDc43f1923f149c2?tab=txs
+
 # AbiPago
 
 Mobile intent-based payments with NFC/QR scanning, ENS payment profiles, LI.FI cross-chain routing, and Uniswap V4 settlement.
