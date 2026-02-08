@@ -26,15 +26,25 @@ import {
   type WalletClient,
   type Hash,
   type Address,
-  type Abi,
+  type Chain,
 } from 'viem';
-import { unichain } from 'viem/chains';
+import { unichain, mainnet, arbitrum, optimism, base, polygon } from 'viem/chains';
 import {
   PAY_ROUTER_ADDRESS,
-  PAY_ROUTER_CHAIN_ID,
   NATIVE_ETH,
   UNICHAIN_RPC,
 } from '@/constants/contracts';
+
+/* ─── Chain map for multi-chain wallet clients ───────────────────── */
+
+const CHAIN_MAP: Record<number, Chain> = {
+  1: mainnet,
+  10: optimism,
+  130: unichain,
+  137: polygon,
+  8453: base,
+  42161: arbitrum,
+};
 
 /* ─── ABIs (viem-style JSON) ─────────────────────────────────────── */
 
@@ -241,9 +251,10 @@ export async function computeInvoiceId(invoice: OnChainInvoice): Promise<`0x${st
 /**
  * Create a viem WalletClient from the EIP-1193 provider injected by AppKit.
  */
-export function getWalletClient(provider: any): WalletClient {
+export function getWalletClient(provider: any, chainId?: number): WalletClient {
+  const chain = chainId ? CHAIN_MAP[chainId] ?? unichain : unichain;
   return createWalletClient({
-    chain: unichain,
+    chain,
     transport: custom(provider),
   });
 }
@@ -273,6 +284,7 @@ export async function approveToken(
   const wallet = getWalletClient(provider);
   return wallet.writeContract({
     account,
+    chain: unichain,
     address: tokenIn,
     abi: ERC20_ABI,
     functionName: 'approve',
@@ -309,6 +321,7 @@ export async function settle(
   const wallet = getWalletClient(provider);
   return wallet.writeContract({
     account,
+    chain: unichain,
     address: PAY_ROUTER_ADDRESS,
     abi: PAY_ROUTER_ABI,
     functionName: 'settle',
@@ -346,6 +359,7 @@ export async function settleNative(
   const wallet = getWalletClient(provider);
   return wallet.writeContract({
     account,
+    chain: unichain,
     address: PAY_ROUTER_ADDRESS,
     abi: PAY_ROUTER_ABI,
     functionName: 'settleNative',

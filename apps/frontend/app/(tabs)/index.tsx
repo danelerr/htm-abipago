@@ -57,7 +57,7 @@ export default function HomeDashboard() {
     42161: 'Arbitrum',
   };
 
-  const networkLabel = chainId ? CHAIN_MAP[chainId] ?? `#${chainId}` : '—';
+  const networkLabel = chainId ? CHAIN_MAP[chainId as number] ?? `#${chainId}` : '—';
   const displayName = ensName ?? (address ? formatAddress(address) : 'Not Connected');
   const displayAddr = address ? formatAddress(address) : '—';
 

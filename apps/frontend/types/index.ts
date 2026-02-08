@@ -21,6 +21,10 @@ export interface Invoice {
   ref: string;            // Human reference (e.g. "coffee42")
   assetHint?: string;     // Optional display token symbol
   chainId?: number;       // Destination chain from QR
+  token?: string;         // Token contract address on dest chain (from QR)
+  decimals?: number;      // Token decimals (from QR)
+  router?: string;        // PayRouter address (from QR)
+  receiver?: string;      // Merchant wallet address (from QR)
 }
 
 /** Route information returned by LI.FI */

@@ -34,8 +34,13 @@ function parseAbipagoUri(raw: string): Invoice | null {
     const assetHint = url.searchParams.get('asset') ?? undefined;
     const chainIdStr = url.searchParams.get('chainId');
     const chainId = chainIdStr ? parseInt(chainIdStr, 10) : undefined;
+    const token = url.searchParams.get('token') ?? undefined;
+    const decimalsStr = url.searchParams.get('decimals');
+    const decimals = decimalsStr ? parseInt(decimalsStr, 10) : undefined;
+    const router = url.searchParams.get('router') ?? undefined;
+    const receiver = url.searchParams.get('receiver') ?? undefined;
     if (!ens || !amount) return null;
-    return { ens, amount, ref, assetHint, chainId };
+    return { ens, amount, ref, assetHint, chainId, token, decimals, router, receiver };
   } catch {
     return null;
   }
@@ -82,7 +87,7 @@ export default function ScanPayScreen() {
         setResolving(true);
         try {
           const profile = await getPaymentProfile(invoice.ens);
-          // QR chainId overrides ENS profile chainId
+          // QR fields take priority over ENS profile values
           const destChainId = invoice.chainId ?? profile?.chainId;
           router.push({
             pathname: '/confirm-payment',
@@ -91,12 +96,14 @@ export default function ScanPayScreen() {
               amount: invoice.amount,
               ref: invoice.ref,
               assetHint: invoice.assetHint ?? '',
-              receiver: profile?.receiver ?? '',
+              receiver: invoice.receiver ?? profile?.receiver ?? '',
               destChainId: destChainId?.toString() ?? '',
-              destToken: profile?.token ?? '',
+              destToken: invoice.token ?? profile?.token ?? '',
+              token: invoice.token ?? '',
+              decimals: invoice.decimals?.toString() ?? '',
               slippageBps: profile?.slippageBps?.toString() ?? '',
               memo: profile?.memo ?? '',
-              routerAddr: profile?.router ?? '',
+              routerAddr: invoice.router ?? profile?.router ?? '',
             },
           });
         } catch {
@@ -106,6 +113,24 @@ export default function ScanPayScreen() {
           // Allow scanning again after navigating back
           setTimeout(() => { hasScanned.current = false; }, 2000);
         }
+      } else if (invoice) {
+        // No ENS name but valid abipago URI (e.g. raw address in QR)
+        router.push({
+          pathname: '/confirm-payment',
+          params: {
+            ens: invoice.ens,
+            amount: invoice.amount,
+            ref: invoice.ref,
+            assetHint: invoice.assetHint ?? '',
+            receiver: invoice.receiver ?? '',
+            destChainId: invoice.chainId?.toString() ?? '',
+            destToken: invoice.token ?? '',
+            token: invoice.token ?? '',
+            decimals: invoice.decimals?.toString() ?? '',
+            routerAddr: invoice.router ?? '',
+          },
+        });
+        setTimeout(() => { hasScanned.current = false; }, 2000);
       } else {
         router.push('/confirm-payment');
         setTimeout(() => { hasScanned.current = false; }, 2000);

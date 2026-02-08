@@ -24,7 +24,7 @@ import type { RouteInfo } from '@/types';
 import SwipeButton from '@/components/ui/swipe-button';
 import { useAccount } from '@/services/appkit';
 import { chainName } from '@/services/ens';
-import { getQuoteToAmount, type LiFiStep } from '@/services/lifi';
+import { getQuoteToAmount, getQuoteContractCalls, type LiFiStep } from '@/services/lifi';
 import {
   PAY_ROUTER_ADDRESS,
   PAY_ROUTER_CHAIN_ID,
@@ -35,6 +35,7 @@ import {
 import {
   buildInvoice,
   buildPaymentPlan,
+  encodeSettleFromBridge,
   parseUnits,
   type OnChainInvoice,
   type PaymentPlan,
@@ -100,7 +101,7 @@ export default function ConfirmPaymentScreen() {
     (async () => {
       setFetchingRoute(true);
       try {
-        const payerChain = walletChainId ?? 42161; // default Arbitrum
+        const payerChain = typeof walletChainId === 'string' ? parseInt(walletChainId, 10) : (walletChainId ?? 42161);
         const isSameChain = payerChain === destChainId;
 
         // On same-chain with known token — show direct route
@@ -140,17 +141,55 @@ export default function ConfirmPaymentScreen() {
           return;
         }
 
-        // Cross-chain: fetch LI.FI quote
-        const quote = await getQuoteToAmount({
-          fromChain: payerChain,
-          toChain: destChainId,
-          fromToken: '0x0000000000000000000000000000000000000000', // ETH
-          toToken: tokenOutAddr,
-          fromAddress: address,
-          toAddress: routerAddr, // funds go to PayRouter for settleFromBridge
-          toAmount: parseUnits(payAmount, tokenOutDecimals).toString(),
-          slippage: slippageBps / 10000,
-        });
+        // Cross-chain: build settleFromBridge calldata for LI.FI contract call
+        const toAmountRaw = onChainInvoice
+          ? onChainInvoice.amountOut.toString()
+          : parseUnits(payAmount, tokenOutDecimals).toString();
+
+        // Encode settleFromBridge calldata so LI.FI calls PayRouter atomically after bridge
+        let contractCallData: string | undefined;
+        if (onChainInvoice) {
+          contractCallData = encodeSettleFromBridge(
+            onChainInvoice,
+            tokenOutAddr as `0x${string}`,   // tokenIn on dest = tokenOut (same token)
+            onChainInvoice.amountOut,
+            '0x',                            // no swap needed
+            address as `0x${string}`,        // refundTo = payer
+          );
+        }
+
+        // Use contractCalls endpoint if we have calldata, else fallback to simple quote
+        let quote: import('@/services/lifi').LiFiStep;
+        if (contractCallData) {
+          quote = await getQuoteContractCalls({
+            fromChain: payerChain,
+            fromToken: '0x0000000000000000000000000000000000000000', // native ETH
+            fromAddress: address,
+            toChain: destChainId,
+            toToken: tokenOutAddr,
+            toAmount: toAmountRaw,
+            toFallbackAddress: address, // safety: tokens go to payer if contract call fails
+            contractCalls: [{
+              fromAmount: toAmountRaw,
+              fromTokenAddress: tokenOutAddr,
+              toContractAddress: routerAddr,
+              toContractCallData: contractCallData,
+              toContractGasLimit: '400000',
+            }],
+            slippage: slippageBps / 10000,
+          });
+        } else {
+          quote = await getQuoteToAmount({
+            fromChain: payerChain,
+            toChain: destChainId,
+            fromToken: '0x0000000000000000000000000000000000000000',
+            toToken: tokenOutAddr,
+            fromAddress: address,
+            toAddress: address,
+            toAmount: toAmountRaw,
+            slippage: slippageBps / 10000,
+          });
+        }
         if (cancelled) return;
         setLifiQuote(quote);
 

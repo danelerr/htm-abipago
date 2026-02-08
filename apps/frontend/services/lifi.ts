@@ -167,6 +167,28 @@ export interface LiFiStatusResponse {
   receiving?: { txHash: string; amount: string; token: LiFiToken };
 }
 
+/* ─── Contract-calls quoting (bridge + dest-chain action) ────────── */
+
+export interface LiFiContractCall {
+  fromAmount: string;
+  fromTokenAddress: string;
+  toContractAddress: string;
+  toContractCallData: string;
+  toContractGasLimit: string;
+}
+
+export interface GetQuoteContractCallsParams {
+  fromChain: number | string;
+  fromToken: string;
+  fromAddress: string;
+  toChain: number | string;
+  toToken: string;
+  toAmount: string;
+  toFallbackAddress: string;
+  contractCalls: LiFiContractCall[];
+  slippage?: number;
+}
+
 /* ─── Helpers ────────────────────────────────────────────────────── */
 
 async function lifiGet<T>(path: string, params: Record<string, string | number | undefined>): Promise<T> {
@@ -285,4 +307,25 @@ export async function getChains(): Promise<{ chains: { id: number; name: string;
  */
 export async function getTokens(chainId?: number): Promise<{ tokens: Record<string, LiFiToken[]> }> {
   return lifiGet('/tokens', { chains: chainId });
+}
+
+/**
+ * Get a quote with post-bridge contract calls on the destination chain.
+ * Used for cross-chain payments: LI.FI bridges tokens → calls settleFromBridge on PayRouter.
+ */
+export async function getQuoteContractCalls(
+  params: GetQuoteContractCallsParams,
+): Promise<LiFiStep> {
+  return lifiPost<LiFiStep>('/quote/contractCalls', {
+    fromChain: params.fromChain,
+    fromToken: params.fromToken,
+    fromAddress: params.fromAddress,
+    toChain: params.toChain,
+    toToken: params.toToken,
+    toAmount: params.toAmount,
+    toFallbackAddress: params.toFallbackAddress,
+    contractCalls: params.contractCalls,
+    slippage: params.slippage ?? 0.005,
+    integrator: 'abipago',
+  });
 }

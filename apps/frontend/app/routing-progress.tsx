@@ -191,12 +191,15 @@ export default function RoutingProgressScreen() {
             throw new Error('Missing LI.FI transaction data');
           }
 
-          const wallet = getWalletClient(walletProvider);
+          // Use source chain for the wallet client (tx is signed on the payer's chain)
+          const sourceChainId = parseInt(params.lifiTxChainId ?? params.fromChainId ?? '42161', 10);
+          const wallet = getWalletClient(walletProvider, sourceChainId);
           const txHash = await wallet.sendTransaction({
             account,
             to: params.lifiTxTo as `0x${string}`,
             data: params.lifiTxData as `0x${string}`,
             value: BigInt(params.lifiTxValue ?? '0'),
+            chain: null, // let the wallet handle chain (EIP-1193)
           });
           setSourceTxHash(txHash);
           updateStep('preparing', { status: 'completed', subtitle: 'Transaction sent' });
@@ -206,9 +209,9 @@ export default function RoutingProgressScreen() {
             txHash,
           });
 
-          // Wait for source tx to be mined
-          await waitForTx(txHash);
-          updateStep('swapping', { subtitle: 'Bridge pending…' });
+          // Source tx sent — LI.FI status polling will track confirmation + bridge
+          // (waitForTx uses Unichain RPC, but source tx is on a different chain)
+          updateStep('swapping', { subtitle: 'Waiting for source confirmation…' });
 
           // Poll LI.FI status
           const fromChain = parseInt(params.fromChainId ?? '42161', 10);
